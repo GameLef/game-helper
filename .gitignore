@@ -1,0 +1,26 @@
+# ===== 运行时产物（含本机路径等环境信息）=====
+logs/
+state/
+
+# ===== 路由缓存（由 yaml 自动生成）=====
+routes/_cache/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ===== 测试 / 工具缓存 =====
+.pytest_cache/
+.coverage
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+
+# ===== 系统 =====
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,17 @@
+{
+  "ahkPath": "C:\\Program Files\\AutoHotkey\\v2\\AutoHotkey64.exe",
+  "routesDir": "routes",
+  "hotkeys": {
+    "stopAll": "F12",
+    "bindings": [
+      {
+        "hotkey": ".",
+        "action": "run_route",
+        "route": "-6",
+        "startAt": 1
+      }
+    ]
+  },
+  "autoStartDaemon": true,
+  "autoReloadOnSave": true
+}
