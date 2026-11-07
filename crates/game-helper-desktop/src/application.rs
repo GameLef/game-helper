@@ -62,9 +62,7 @@ pub fn run() {
     let _instance_guard = guard;
     application().with_assets(assets::Assets).run(move |cx| {
         init(cx);
-        if !picker {
-            crate::workspace_theme::init(cx);
-        }
+        crate::workspace_theme::init(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -72,22 +70,25 @@ pub fn run() {
         })
         .detach();
         let options = WindowOptions {
-            titlebar: if picker {
-                None
-            } else {
-                Some(gpui_kit::TitlebarOptions {
-                    title: Some("路线管理".into()),
-                    ..Default::default()
-                })
-            },
-            window_min_size: if picker {
-                None
-            } else {
-                Some(size(px(900.), px(640.)))
-            },
+            titlebar: Some(gpui_kit::TitlebarOptions {
+                title: Some(
+                    if picker {
+                        "取点工具"
+                    } else {
+                        "路线管理"
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            }),
+            window_min_size: Some(size(px(900.), px(640.))),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
-                size(px(1280.), px(900.)),
+                if picker {
+                    size(px(1120.), px(800.))
+                } else {
+                    size(px(1280.), px(900.))
+                },
                 cx,
             ))),
             ..Default::default()

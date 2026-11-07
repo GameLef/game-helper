@@ -1,4 +1,4 @@
-//! Presentation tokens for the route workspace. Picker/probe keep their own theme.
+//! Shared presentation tokens for the route manager and picker. Probe keeps its own theme.
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{App, Hsla, px, rgb};
 

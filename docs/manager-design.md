@@ -26,7 +26,7 @@ Rust + GPUI Kit 0.9.0 原生管理器的浅色路线编排工作台。通过 `st
 
 中文正文使用 Microsoft YaHei UI；点位序号使用 Bahnschrift；源码使用 Cascadia Mono。点位的执行顺序是主要视觉元素。没有新增自动播放的装饰动画。
 
-[manager.rs](../crates/game-helper-desktop/src/manager.rs) 保留文档、后台任务和动作分发，[view.rs](../crates/game-helper-desktop/src/manager/view.rs) 负责各个界面区域，[workspace_theme.rs](../crates/game-helper-desktop/src/workspace_theme.rs) 定义管理器专用主题。主题只在管理器模式初始化，独立取点与 probe 沿用原有主题。
+[manager.rs](../crates/game-helper-desktop/src/manager.rs) 保留文档、后台任务和动作分发，[view.rs](../crates/game-helper-desktop/src/manager/view.rs) 负责各个界面区域，[workspace_theme.rs](../crates/game-helper-desktop/src/workspace_theme.rs) 定义共享工作台主题。主题在管理器与独立取点模式初始化，probe 沿用原有主题。
 
 搜索、折叠和确认焦点是内存中的界面状态，不标记文档为脏，不写配置。输入实体不会在渲染时重新创建。路线仍使用 `route/v1`，新生成的 YAML / 缓存移除点位层 `pos`，旧字段兼容读取并忽略；配置和 AHK IPC 保持不变。取点生成默认点击动作以保存采集位置，新增动作优先使用已有点击或拖动的坐标，无空间动作时默认窗口中心。
 
