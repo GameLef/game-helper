@@ -1,0 +1,22 @@
+[package]
+name = "game-helper-desktop"
+version.workspace = true
+edition.workspace = true
+description = "game_helper v2 桌面端（GPUI Kit）：管理器 + --picker 取点工具"
+
+[[bin]]
+name = "game-helper"
+path = "src/main.rs"
+
+[dependencies]
+# 统一 UI 入口：gpui-kit =0.9.0（再导出 gpui 核心 / component / assets），
+# tree-sitter-yaml 提供 Editor 的 YAML 语法高亮。不引入独立 gpui、不引入 Tauri。
+gpui-kit = { workspace = true }
+game-helper-core = { workspace = true }
+game-helper-windows = { workspace = true }
+# 版本与核心层保持一致（anyhow/serde_json/yaml_serde 已由 core 引入并被复用）。
+anyhow = "1"
+serde_json = "1"
+
+# Native UI acceptance is driven through Windows UI Automation.
+# Kit test-support currently conflicts with the locked taffy dependency; see migration notes.

@@ -1,0 +1,37 @@
+[package]
+name = "game-helper-windows"
+version.workspace = true
+edition.workspace = true
+description = "game_helper v2 Windows 平台层（Phase 1）：窗口枚举/客户区/归一化坐标/Ctrl+Alt+P 热键服务"
+
+[target.'cfg(windows)'.dependencies]
+# Phase 1 仅引入本阶段实际用到的 features（GPUI 已拉取 0.62.2，与其共用同一份）：
+# - Win32_Foundation        HWND/POINT/RECT/HANDLE/CLOSE_HANDLE/GetLastError/ERROR_*
+# - Win32_Graphics_Gdi      ScreenToClient（客户区换算）
+# - Win32_System_Threading  OpenProcess/QueryFullProcessImageNameW/GetCurrentThreadId/CreateMutexW
+# - Win32_Security          CreateMutexW 的 SECURITY_ATTRIBUTES 参数类型
+# - Win32_UI_HiDpi          SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)
+# - Win32_UI_Input_KeyboardAndMouse RegisterHotKey/UnregisterHotKey/MOD_*/VK_P
+# - Win32_UI_WindowsAndMessaging  EnumWindows/FindWindowW/RegisterWindowMessageW/
+#                                 SendMessageTimeoutW/SMTO_*/WM_QUIT/...
+# - Win32_System_DataExchange     COPYDATASTRUCT（dwData:usize / cbData:u32 / lpData:*mut c_void）
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_DataExchange",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# AHK 安装探测：config.ahkPath 缺失/无效时查 HKLM\SOFTWARE\AutoHotkey\InstallDir。
+winreg = "0.56.0"
+
+[dependencies]
+game-helper-core = { workspace = true }
+anyhow = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,29 @@
+# game_helper v2 · Rust + GPUI Kit native preview workspace
+#
+#   game-helper-core     route/v1、配置、校验、脏文档与文件仓库（无 UI/平台依赖）
+#   game-helper-windows  DPI、窗口、RegisterHotKey、AHK 进程与窗口消息 IPC
+#   game-helper-desktop  原生管理器、独立取点工具与 --probe 能力验证窗口
+#
+# AHK daemon/runner 执行核心保留；完整验收和默认入口切换见 docs/rust-migration.md。
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/game-helper-core",
+    "crates/game-helper-windows",
+    "crates/game-helper-desktop",
+]
+default-members = ["crates/game-helper-desktop"]
+
+[workspace.package]
+version = "0.1.0-phase1"
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+game-helper-core = { path = "crates/game-helper-core" }
+game-helper-windows = { path = "crates/game-helper-windows" }
+# 统一入口：gpui-kit =0.9.0（内含 gpui 核心 / gpui-component / assets 再导出）。
+# tree-sitter-yaml feature 自动启用 component 并带上 YAML 语法高亮。
+# 不引入独立 gpui、不引入 Tauri。
+gpui-kit = { version = "=0.9.0", features = ["tree-sitter-yaml", "assets"] }

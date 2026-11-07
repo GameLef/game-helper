@@ -5,7 +5,7 @@
     "stopAll": "F12",
     "bindings": [
       {
-        "hotkey": ".",
+        "hotkey": "'",
         "action": "run_route",
         "route": "-6",
         "startAt": 1

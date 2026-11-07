@@ -1,6 +1,18 @@
 # game_helper v2
 
-路线回放工具链：**Python 管、AHK 跑**。
+路线回放工具链：稳定入口仍为 **Python 管、AHK 跑**；另提供 **Rust + GPUI Kit 原生预览版**。
+
+## 原生预览版
+
+运行 `start-rust.bat` 打开 Rust 管理器，`start-rust.bat --picker` 打开独立取点工具。原生客户端无需 Python、Rust 或 WebView 运行时，路线回放继续依赖 AutoHotkey v2。
+
+从源码构建：`scripts\cargo.cmd build -p game-helper-desktop --release --locked`。便携打包：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1`。
+
+当前已接入路线/操作编辑、YAML、保存保护和全局取点，完整 AHK 回放、系统 IME 和多 DPI 验收仍待收尾。`start.bat` 保持旧默认入口，`start-python.bat` 可显式回退。详见 [原生迁移与验证记录](docs/rust-migration.md)。
+
+原生管理器已采用浅色路线编排工作台，支持路线搜索、点位分栏编辑和固定执行栏。见 [界面设计与实际截图](docs/manager-design.md)。
+
+下面是原 Python 客户端的使用说明。
 
 ```
 YAML 路线（人写/人读）

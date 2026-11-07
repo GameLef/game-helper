@@ -5,6 +5,11 @@ state/
 # ===== 路由缓存（由 yaml 自动生成）=====
 routes/_cache/
 
+# ===== Rust / project-local build tools =====
+/target/
+/.tools/
+/dist/
+
 # ===== Python =====
 __pycache__/
 *.py[cod]
