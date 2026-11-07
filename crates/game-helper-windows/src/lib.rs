@@ -36,9 +36,9 @@
 #![cfg_attr(not(windows), allow(unused_imports))]
 #![warn(missing_docs)]
 
-/// daemon 窗口消息 IPC 协议常量（Phase 1 不实现，仅契约文档）。
+/// Rust 管理器与 AHK daemon 的窗口消息 IPC 协议常量。
 ///
-/// 兼容边界，源自 Phase 0 调查报告 §3（launcher.py L4-8/L26-27/L64-93/L142-162）：
+/// [`daemon::DaemonClient`] 使用的协议契约：
 /// - 窗口标题：`game_helper_daemon_v2`；
 /// - `RegisterWindowMessage`：`GameHelperDaemon_Ping` / `_Reload` / `_Stop`
 ///   （ID 是会话级动态分配，两端只能靠相同字符串匹配，禁止硬编码数值）；
@@ -46,8 +46,8 @@
 ///   cbData 含 NUL）；daemon 侧 `SetTimer(-1)` 延迟执行后立即返回 1=受理；
 /// - Ping 返回值位编码：`(热键数 << 1) | (busy ? 1 : 0)`，热键数掩 `0x7FFFFFFF`。
 ///
-/// Rust 侧建议用 `SendMessageTimeout(SMTO_ABORTIFHUNG)` 替代裸 `SendMessage`
-/// （Phase 0 报告 §8-h：daemon 挂死会挂死 UI 线程）。
+/// Rust 侧使用 `SendMessageTimeout(SMTO_ABORTIFHUNG)`，避免 daemon 无响应时
+/// 无限阻塞消息发送。
 pub mod daemon_protocol {
     /// daemon 隐藏消息窗口标题（`FindWindowW(None, _)`）。
     pub const DAEMON_WINDOW_TITLE: &str = "game_helper_daemon_v2";

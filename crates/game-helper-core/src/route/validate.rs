@@ -178,8 +178,8 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
             );
         }
     }
-    // All parameters are normalized here; unknown fields follow the old Python
-    // model's behavior and are not inserted into executable caches.
+    // Normalize all parameters here; unknown operation fields are not inserted
+    // into executable caches.
     if params.contains_key("type") {
         bail!("{location}: 参数不能覆盖操作类型");
     }

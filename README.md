@@ -1,103 +1,87 @@
-# game_helper v2
+# game_helper
 
-路线回放工具链：稳定入口仍为 **Python 管、AHK 跑**；另提供 **Rust + GPUI Kit 原生预览版**。
+基于 **Rust + GPUI Kit** 的原生 Windows 路线管理器和取点工具，使用 **AutoHotkey v2** 回放路线。项目仅维护 Rust 客户端。
 
-## 原生预览版
+## 启动
 
-运行 `start-rust.bat` 打开 Rust 管理器，`start-rust.bat --picker` 打开独立取点工具。原生客户端无需 Python、Rust 或 WebView 运行时，路线回放继续依赖 AutoHotkey v2。
+```bat
+rem 打开管理器
+start.bat
 
-从源码构建：`scripts\cargo.cmd build -p game-helper-desktop --release --locked`。便携打包：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1`。
-
-当前已接入路线/操作编辑、YAML、保存保护和全局取点，完整 AHK 回放、系统 IME 和多 DPI 验收仍待收尾。`start.bat` 保持旧默认入口，`start-python.bat` 可显式回退。详见 [原生迁移与验证记录](docs/rust-migration.md)。
-
-原生管理器已采用浅色路线编排工作台，支持路线搜索、点位分栏编辑和固定执行栏。见 [界面设计与实际截图](docs/manager-design.md)。
-
-下面是原 Python 客户端的使用说明。
-
-```
-YAML 路线（人写/人读）
-   │ 保存/绑定时转换（非热路径）
-   ▼
-routes/_cache/*.json ──预载──▶ daemon.ahk（常驻，原生热键毫秒级响应）
-   │                              ▲  窗口消息(Ping/Reload/Stop/CopyData-Run)
-   │                              │
-   └── runner.ahk（调试直启）    python 管理器 GUI（启停/重载/执行按钮）
+rem 打开独立取点工具
+start.bat --picker
 ```
 
-## 功能
+`start.bat` 是统一启动入口，优先使用 `target/release/game-helper.exe`，其次使用 `target/debug/game-helper.exe`；缺少产物时会提示构建命令。
 
-- **路线文件**：YAML，一个文件一条路线，点位为对象、内嵌操作序列，支持注释（格式见 [docs/route-format.md](docs/route-format.md)）
-- **取点工具** `python/picker.py`：选目标窗口（下拉 + 十字准星）→ 实时鼠标相对客户区/归一化坐标 → `Ctrl+Alt+P` 采点 → 保存/导出 YAML
-- **脚本管理器** `python/manager.py`：路线列表、表格/源码双视图编辑、导入导出、热键绑定、daemon 启停控制、执行/试跑按钮
-- **执行核心**：AHK v2。daemon 常驻模式为主（热键→首动作 <50ms），runner CLI 为调试保底
-- **急停**：全局 `F12`（config.json 可改）
+运行客户端无需安装 Rust 或 WebView。路线执行需要 AutoHotkey v2；可通过 `config.json` 的 `ahkPath` 指定路径，否则自动探测。Windows 还需要 Microsoft Visual C++ x64 运行库（`VCRUNTIME140.dll`）。
 
-## 安装
+## 从源码构建
 
-1. Python 3.12+，然后：
+需要 Windows 10+、Visual Studio 2022 C++ 桌面工具与 Windows SDK。项目固定 Rust 1.99.1 MSVC 和 GPUI Kit 0.9.0，使用项目内工具链与编译缓存。
 
-   ```
-   pip install -r v2/requirements.txt
-   ```
-
-2. AutoHotkey v2（默认路径 `C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe`；不同路径请改 `config.json` 的 `ahkPath`）
-
-## 使用
-
-```
-# 启动管理器（推荐入口；可自动拉起 daemon）
-python python/manager.py
-
-# 只启动取点工具
-python python/picker.py
-
-# 手动启动/停止 daemon（也可在管理器顶栏操作）
-python -c "import sys; sys.path.insert(0,'python'); from core import launcher; print(launcher.start_daemon())"
+```bat
+scripts\cargo.cmd build -p game-helper-desktop --release --locked
+scripts\cargo.cmd test --workspace --locked
+scripts\cargo.cmd fmt --all -- --check
 ```
 
-演示：打开记事本 → 管理器选中 `demo_notepad` → 「从头执行」，或按绑定热键 F9。
+便携打包：
 
-### 按热键执行（daemon 模式，单步）
-
-1. 管理器左侧选中路线 → 底部「绑定热键…」输入如 `F9`（支持 `ctrl+alt+F8` 写法），并设起始点
-2. daemon 自动重载；**热键为单步模式：每按一次执行一个点位，再按执行下一个，走完最后一个点后回到起始点循环**
-3. 当前进度显示在管理器顶栏 daemon 状态区（如 `测试 ▸ 2/5`），触发时屏幕另有 `第 N/M 点` ToolTip 提示
-4. 执行失败或急停时游标不前进，再按热键重试同一点
-5. `F12` 全局急停；托盘图标可暂停/恢复热键
-6. 需要一口气跑完整条路线时，用管理器的「从头执行 / 从此点开始」按钮（连续执行）
-
-### 调试单条路线
-
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1
 ```
-"C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe" ahk/runner.ahk routes/_cache/demo_notepad.json --start 2
+
+发布目录和 zip 输出到 `dist/`，默认不包含用户路线与热键绑定；需要携带时传入 `-IncludeUserData`。完整构建、进程约定和验证记录见[原生客户端说明](docs/rust-migration.md)。
+
+## 功能与使用
+
+- **路线管理**：新建、搜索、导入导出、删除，以及点位与操作编辑；支持表单和 YAML 源码双视图、未保存修改保护、磁盘冲突检测和原文备份。
+- **独立取点**：窗口列表或延时准星选窗，查看客户区及归一化坐标，通过全局 `Ctrl+Alt+P` 或延时按钮采点，编辑点名并保存路线。
+- **六类操作**：点击、按下/松开、按住、滚轮、拖动、等待。路线格式见[route/v1 规范](docs/route-format.md)。
+- **路线执行**：保存路线后可绑定热键、从指定点连续执行或仅试跑选中点；管理器提供 daemon 启停、重载和单步进度。
+- **急停**：默认全局 `F12`，实际按键由 `config.json` 的 `hotkeys.stopAll` 决定。
+
+热键绑定使用 daemon 单步模式：每按一次执行一个点位，最后一个点成功后回到起始点循环；执行失败或急停时游标不前进。需要连续回放时使用管理器执行按钮。保存或执行会生成路线 JSON 缓存；已有 YAML 路线首次使用热键前，应先在管理器保存，再绑定或重载 daemon。
+
+管理器采用路线库、点位序列和动作编辑分栏的浅色工作台，支持路线搜索和固定执行栏。见[界面设计与实际截图](docs/manager-design.md)。
+
+```text
+Rust 管理器 / 取点工具
+    │ 校验并保存 YAML，生成执行缓存
+    ▼
+routes/_cache/*.json ──预载──▶ AHK daemon
+    │                            ▲
+    └── AHK runner（独立执行）     │ Win32 IPC：Ping / Reload / Stop / Run
+                                 │
+                            Rust 管理器
 ```
 
 ## 目录
 
+```text
+crates/
+  game-helper-core/       路线、配置、校验、文档与文件存储
+  game-helper-windows/    窗口、DPI、全局热键、AHK 进程与 IPC
+  game-helper-desktop/    GPUI Kit 管理器、独立取点工具与原生 exe
+ahk/                     daemon / runner / JSON 与执行核心
+scripts/                 Rust 构建、便携打包和隔离 UI 检查
+routes/                  路线 YAML、_cache/ 执行缓存与 .backups/ 备份
+docs/                    路线规范、原生客户端说明和界面设计
+logs/                    执行日志
+state/                   daemon 单步游标
+config.json              AHK 路径、热键绑定与 daemon 设置
+start.bat                默认 Rust 启动入口，可传 --picker
 ```
-v2/
-├── ahk/            daemon.ahk / runner.ahk / lib(JSON+executor)
-├── python/
-│   ├── core/       route_model / window_utils / launcher / hotkey_service
-│   ├── widgets/    point_table（表格编辑）/ daemon_bar（daemon 控制条）
-│   ├── picker.py   取点工具
-│   └── manager.py  管理器
-├── routes/         路线 YAML + _cache/（自动生成的 JSON）
-├── logs/           执行日志（含热键→首动作延迟）
-├── state/          cursor.json（daemon 单步游标，管理器进度显示用）
-├── tests/          pytest 单元测试
-├── docs/           路线格式规范
-└── config.json     AHK 路径 / 热键绑定 / daemon 自启开关
-```
 
-## 注意事项
+Rust 单元和契约测试位于各 crate 的 `src/`、`tests/` 中。
 
-- **管理员权限**：若目标程序（如游戏）以管理员运行，daemon/runner 与管理器也需以管理员启动，否则 SendInput 无法注入
-- **DPI**：两端均声明 Per-Monitor DPI Aware；取点与执行都基于窗口客户区归一化坐标，换分辨率无需重标
-- **日志**：`logs/run_*.log` 记录每步动作与延迟，点空排查先看这里
-- 本项目仅用于个人学习与内部交流；自动化操作游戏有违反用户协议与封号的风险，请自行评估
+## 运行约定与验证边界
 
-## 已知限制（本机验证结论）
+- 若目标程序以管理员身份运行，管理器及 AHK 执行进程也需以相应权限运行，才能发送输入。
+- 取点和执行使用窗口客户区归一化坐标，物理坐标换算采用 `(width-1)/(height-1)`。
+- 源码保存保留已验证原文；结构化编辑会规范化 YAML，可能改变注释与排版，保存前会提示并留备份。
+- 关闭管理器会保留 daemon/runner；停止 daemon 不会停止独立 runner。全局急停键用于中断回放。
+- `logs/run_*.log` 记录动作和延迟；路线执行异常时可据此排查。
 
-- 本机 AHK v2 环境下 `Gui()` 初始化会静默阻塞（已用脚本主窗口改名方案替代），若换机器出现 daemon 无响应可先查此处
-- 表格编辑视图保存时整段重写 points，YAML 点位级注释会丢失（文件级注释保留）
+当前客户端仍处于原生预览阶段。真实 AHK 六类操作完整闭环、系统 IME、多 DPI 与多显示器场景仍有待验收；默认入口切换不代表这些验收已完成。详见[待完成事项](docs/rust-migration.md#仍待完成的验收)。

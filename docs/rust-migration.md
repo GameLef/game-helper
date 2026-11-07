@@ -4,7 +4,7 @@ Rust + GPUI Kit 0.9.0 原生 Windows 客户端。管理器与 `--picker` 使用�
 
 ## 当前交付范围
 
-当前为**原生预览版**。路线与配置核心、Windows IPC、管理器和独立取点工具已接入；完整人工验收尚未收尾，仓库 `start.bat` 继续启动 Python。`start-rust.bat` 是原生入口，`start-python.bat` 是显式回退入口。
+当前为**原生预览版**。路线与配置核心、Windows IPC、管理器和独立取点工具已接入；完整人工验收尚未收尾。按用户最新要求，Python 客户端、依赖与回退入口已删除；仓库 `start.bat` 统一启动 Rust，不提供 Python 回退。默认入口切换不代表下方待验收项已经通过。
 
 | 模块 | 当前实现 |
 |---|---|
@@ -28,8 +28,8 @@ scripts\cargo.cmd clippy --workspace --all-targets --locked
 scripts\cargo.cmd fmt --all -- --check
 scripts\cargo.cmd build -p game-helper-desktop --release --locked
 
-start-rust.bat
-start-rust.bat --picker
+start.bat
+start.bat --picker
 ```
 
 也可直接运行：
@@ -46,7 +46,8 @@ target\release\game-helper.exe --probe
 
 ## 保存、执行与进程约定
 
-- 新建路线保留为内存草稿，填入至少一个目标条件后才能保存。只有显式保存生成缓存。
+- 新建路线保留为内存草稿，填入至少一个目标条件后才能保存。显式保存或执行会生成、更新 `routes/_cache/<文件stem>.json` 执行缓存。
+- 现有 YAML 路线首次使用热键前，先在 Rust 管理器中打开并保存以生成缓存；仅复制 YAML 和绑定不会生成缓存。外部修改 YAML 后也需重新打开并保存；重载 AHK 只重读配置与 JSON 缓存，不会转换 YAML。
 - 源码保存保留已验证原文。结构化修改后保存会提示规范化与注释风险，并保留 `routes/.backups`。
 - 磁盘变化会阻止静默覆盖；配置没有实际变化时不重写原文。绑定修改保留未知字段。
 - 切换路线/关闭有保存、放弃、取消选择。错误源码切换失败时保留输入。
@@ -57,7 +58,6 @@ target\release\game-helper.exe --probe
 - 急停键显示 `config.json` 的真实 `hotkeys.stopAll`，默认 F12。
 - 取点窗口只有一条全局热键通道。采样失败不生成非法点位。存在采点时更换目标需先保存或清空。
 - `.yaml/.yml` 同 stem 共用执行缓存，创建/删除检测到该冲突时拒绝继续。
-- Rust 单实例锁不能约束旧 Python。生产使用前应退出旧管理器，避免两个客户端同时写配置。
 
 ## 本轮实际观察与诊断记录（2026-11-07～08）
 
@@ -66,7 +66,6 @@ target\release\game-helper.exe --probe
 | 项目 | 实际结果与边界 |
 |---|---|
 | Rust 工作区测试 | 命令 exit 0；日志报告 core 51、Windows 9，合计 60 passed / 0 failed；另有 1 个 ignored 子进程服务入口，由父测试显式启动 |
-| Python 基线 | pytest 命令 exit 0，输出 15 passed |
 | Debug 与 Release | Cargo 构建命令均观察到 exit 0；产物位于 `target/debug`、`target/release` |
 | 类型、风格与格式 | `cargo check --workspace`、`clippy --workspace --all-targets`、`fmt --all -- --check` 最终命令均 exit 0，Clippy 保留文档/风格 warning |
 | 管理器原生窗口 | 观察到中文表单↔YAML 往返、坏 YAML 切换保留、显式源码保存/缓存、脏关闭拦截与放弃关闭 |
@@ -95,7 +94,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1
 
 输出到项目 `dist/game-helper-native-preview-<时间>` 及同名 zip，包含 exe、AHK 脚本、空路线目录、默认关闭 daemon 自启的配置、迁移说明及 SHA-256 清单。默认不复制用户路线或绑定；确需复制时显式传 `-IncludeUserData`。不打包构建缓存、日志、游标、备份或 Python 环境。
 
-客户端运行无需 Python/Rust/Tauri；执行路线仍需安装 AutoHotkey v2，`ahkPath` 优先于系统探测。PE 依赖检查还发现 `VCRUNTIME140.dll`，目标电脑需具备 Microsoft Visual C++ x64 运行库；当前包未随附该 DLL，也尚未在干净 Windows 上验收。当前为预览包，保留旧入口，完整验收前不切换仓库默认启动器。
+客户端运行无需 Python/Rust/Tauri；执行路线仍需安装 AutoHotkey v2，`ahkPath` 优先于系统探测。PE 依赖检查还发现 `VCRUNTIME140.dll`，目标电脑需具备 Microsoft Visual C++ x64 运行库；当前包未随附该 DLL，也尚未在干净 Windows 上验收。当前为预览包；仓库默认启动器已按用户要求切换为 Rust，Python 回退入口已删除，完整验收仍按下方待办继续。
 
 便携启动已在项目内的中文/空格路径副本观察：管理器和 picker 均能从不同 cwd 定位 exe 同目录数据并正常关闭；SHA-256 清单核对一致。
 
@@ -105,13 +104,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1
 - 中文系统 IME、文件对话框完整选择/取消、导入重名与删除部分失败的原生窗口流程。
 - 100%/150%/200% DPI、多显示器负坐标、窗口移动缩放；现有自动化仅覆盖当前桌面环境。
 - 取点窗口列表的滚动后鼠标选择、准星和热键冲突恢复，以及重复长按与多次切换的人工验收。
-- 功能矩阵通过后再把根 `start.bat` 切换为 Rust。当前预览交付不等于计划全部验收完成。
+- 默认入口已切换为 Rust，Python 端已删除；继续完成上述功能矩阵与干净 Windows 验收，当前预览交付不等于计划全部验收完成。
 
 ## 管理器界面重设计
 
-Rust 管理器已采用路线库、点位序列和动作编辑分栏的浅色工作台，新增内存搜索、属性/文件/服务控制折叠区、固定执行栏和可键盘取消的确认层。原有文档与执行契约保持不变，默认启动入口未切换。
+Rust 管理器已采用路线库、点位序列和动作编辑分栏的浅色工作台，新增内存搜索、属性/文件/服务控制折叠区、固定执行栏和可键盘取消的确认层。原有文档与执行契约保持不变；通过 `start.bat` 统一启动 Rust 客户端。
 
 本轮 Debug/Release 构建、工作区 60 项测试、Clippy 和格式检查通过；隔离 UI 验收观察到中文双视图往返、保存/缓存、脏关闭保护、搜索、900×640 布局、空状态、120 个长名称点位及 Escape 取消。实际 DPI 为 96；截图已捕获，当前模型无法读取图像，未宣称逐像素目视验收。详细选择、脚本和实际截图见[界面设计记录](manager-design.md)。
+
+## 删除 Python 与默认入口切换验证（2026-11-08）
+
+本次已删除 Python 端，`start.bat` 统一启动 Rust，无 Python 回退。`cargo fmt --all -- --check`、工作区测试、工作区 `cargo check` 与 Release 构建均 exit 0；测试为 60 passed / 0 failed，另有 1 个 ignored 私有子进程服务入口。构建保留原有 18 个缺少文档警告。本轮未运行 GUI 验收，上述真实 AHK、IME、多 DPI 等待办继续保留；上述历史窗口观察不作为本次 GUI 复验结果。
 
 ## 官方资料
 

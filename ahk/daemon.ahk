@@ -7,13 +7,13 @@
 ;   2. 启动/重载时预载 ../routes/_cache/*.json
 ;   3. 隐藏消息窗口 + RegisterWindowMessage 协议（Ping/Reload/Stop/CopyData-Run）
 ;   4. 托盘菜单：暂停热键 / 重载配置 / 退出
-; Python 管理器通过 win32 消息控制本进程
+; Rust 管理器通过 Win32 消息控制本进程
 ; ============================================================
 #Include lib\JSON.ahk
 #Include lib\executor.ahk
 
 global DAEMON_BaseDir := A_ScriptDir "\.."
-global DAEMON_WinTitle := "game_helper_daemon_v2"   ; 隐藏窗口标题（Python 用 FindWindow 定位）
+global DAEMON_WinTitle := "game_helper_daemon_v2"   ; 隐藏窗口标题（Rust 用 FindWindowW 定位）
 global DAEMON_MsgPing := 0, DAEMON_MsgReload := 0, DAEMON_MsgStop := 0
 global DAEMON_Hotkeys := Map()       ; key -> {action, route, startAt}
 global DAEMON_Routes := Map()        ; routeName -> {mtime, data}
@@ -43,7 +43,7 @@ TraySetIcon("shell32.dll", 44)   ; 齿轮
 
 ; ---------- 消息窗口：复用脚本主窗口 ----------
 ; 注意：本机环境下 Gui() 初始化会静默阻塞，改用 A_ScriptHwnd 主窗口收消息。
-; 改名后 Python 侧用 win32gui.FindWindow(None, DAEMON_WinTitle) 定位。
+; 改名后 Rust 侧通过 FindWindowW 定位。
 DetectHiddenWindows(true)
 WinSetTitle(DAEMON_WinTitle, "ahk_id " A_ScriptHwnd)
 EXE_Log("DAEMON msgwin hwnd=" A_ScriptHwnd)

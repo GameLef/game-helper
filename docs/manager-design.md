@@ -1,6 +1,6 @@
 # 路线管理器界面重设计
 
-Rust + GPUI Kit 0.9.0 原生管理器的浅色路线编排工作台。通过 `start-rust.bat` 打开；默认 `start.bat` 和 Python 客户端继续保持原有行为。
+Rust + GPUI Kit 0.9.0 原生管理器的浅色路线编排工作台。通过 `start.bat` 统一启动 Rust 客户端；Python 客户端与回退入口已删除。现有 AHK v2 daemon/runner 继续作为执行后端。
 
 ## 界面结构
 

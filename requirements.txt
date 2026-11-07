@@ -1,5 +1,0 @@
-PySide6>=6.6
-pywin32>=306
-keyboard>=0.13.5
-ruamel.yaml>=0.18
-pytest>=8.0

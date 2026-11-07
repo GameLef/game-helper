@@ -4,7 +4,7 @@
 #   game-helper-windows  DPI、窗口、RegisterHotKey、AHK 进程与窗口消息 IPC
 #   game-helper-desktop  原生管理器、独立取点工具与 --probe 能力验证窗口
 #
-# AHK daemon/runner 执行核心保留；完整验收和默认入口切换见 docs/rust-migration.md。
+# AHK daemon/runner 执行核心保留；构建和验收记录见 docs/rust-migration.md。
 
 [workspace]
 resolver = "2"

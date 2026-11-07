@@ -102,7 +102,11 @@ points:
 |---|---|---|---|
 | `ms` | 是 | - | 等待毫秒数，≥1 |
 
-## 校验规则（route_model.py 与 AHK executor 双端执行同一套规则）
+## 校验规则
+
+Rust `game-helper-core` 负责数据校验与规范执行缓存的生成，AHK executor 读取缓存执行操作。
+
+YAML 是源文件，`routes/_cache/<文件 stem>.json` 是执行缓存。Rust 管理器显式保存或执行路线、取点工具保存路线时会生成缓存。AHK 热键只读取缓存；首次使用拷贝进来的 YAML 路线时，应先在管理器保存，再绑定热键或重载 daemon。外部修改 YAML 后也需在管理器重新打开并保存，单独重载 AHK 不会转换 YAML。
 
 1. `format` 必须为 `route/v1`
 2. `name` 必须为非空字符串
