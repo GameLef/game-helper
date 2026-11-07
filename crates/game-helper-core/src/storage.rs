@@ -37,6 +37,9 @@ impl AppPaths {
     pub fn cursor(&self) -> PathBuf {
         self.root.join("state/cursor.json")
     }
+    pub fn picker_state(&self) -> PathBuf {
+        self.root.join("state/picker.json")
+    }
     pub fn route_path(&self, stem: &str) -> Result<PathBuf> {
         validate_stem(stem)?;
         ensure!(

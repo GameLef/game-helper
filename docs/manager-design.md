@@ -28,7 +28,7 @@ Rust + GPUI Kit 0.9.0 原生管理器的浅色路线编排工作台。通过 `st
 
 [manager.rs](../crates/game-helper-desktop/src/manager.rs) 保留文档、后台任务和动作分发，[view.rs](../crates/game-helper-desktop/src/manager/view.rs) 负责各个界面区域，[workspace_theme.rs](../crates/game-helper-desktop/src/workspace_theme.rs) 定义共享工作台主题。主题在管理器与独立取点模式初始化，probe 沿用原有主题。
 
-搜索、折叠和确认焦点是内存中的界面状态，不标记文档为脏，不写配置。输入实体不会在渲染时重新创建。路线仍使用 `route/v1`，新生成的 YAML / 缓存移除点位层 `pos`，旧字段兼容读取并忽略；配置和 AHK IPC 保持不变。取点生成默认点击动作以保存采集位置，新增动作优先使用已有点击或拖动的坐标，无空间动作时默认窗口中心。
+搜索、折叠和确认焦点是内存中的界面状态，不标记文档为脏，不写配置。输入实体不会在渲染时重新创建。路线仍使用 `route/v1`，新生成的 YAML / 缓存移除点位层 `pos`，旧字段兼容读取并忽略；配置和 AHK IPC 保持不变。取点工具独立持久化采集位置，复制后可粘贴到动作坐标框；新增动作优先使用已有点击或拖动的坐标，无空间动作时默认窗口中心。
 
 路线切换使用独立加载状态：旧文档保持显示，透明交互遮罩阻止加载期间的编辑，控件不切换全局禁用配色；成功后一次性替换工作区，失败保留旧内容。放弃后切换不再先显示欢迎页，点击当前路线不会重复加载。保存及服务操作仍沿用原有忙碌状态。
 
@@ -73,7 +73,7 @@ pwsh -File scripts\smoke-manager-controls.ps1
 pwsh -File scripts\smoke-manager-controls.ps1 -Executable target\release\game-helper.exe
 ```
 
-取点回归脚本 [smoke-picker.ps1](../scripts/smoke-picker.ps1) 使用独立原生 `--probe` 窗口作为临时目标，已验证失焦全局采点、默认点击动作的坐标精度、YAML / 缓存不含点位层 `pos`、热键释放及正常关闭，不触发回放。先运行 `prepare-smoke.ps1`，再运行 `pwsh -File scripts\smoke-picker.ps1 -Executable target\release\game-helper.exe` 可复验。
+取点回归脚本 [smoke-picker.ps1](../scripts/smoke-picker.ps1) 自建隔离目录和原生 `--probe` 目标，覆盖失焦全局采点、坐标复制、自动保存、标题隔离、重启恢复与错误处理；无需先运行 `prepare-smoke.ps1`。[smoke-picker-coordinates.ps1](../scripts/smoke-picker-coordinates.ps1) 验证点击取点坐标复制后，用真实 Ctrl+V 粘贴至管理器的点击坐标框，保存路线/缓存并重启管理器后坐标保留。均不请求回放，可传 `-Executable target\release\game-helper.exe` 复验。
 
 ## 实际原生窗口截图
 

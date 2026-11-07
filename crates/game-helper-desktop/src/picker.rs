@@ -1,10 +1,10 @@
 //! Independent native picker. RegisterHotKey is owned by this window only.
 mod view;
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{Context as _, Result};
 use game_helper_core::{
-    route::{OpKind, Operation, Point, Route, Target},
-    storage::{self, AppPaths, DiskSnapshot},
+    picker::{CapturedPoint, PickerFile, PickerTarget},
+    storage::AppPaths,
 };
 use game_helper_windows::{hotkey::HotkeyService, window as win};
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -12,24 +12,13 @@ use gpui_kit::{
     AppContext, ClipboardItem, Context, Entity, FocusHandle, IntoElement, Render, ScrollHandle,
     SharedString, Subscription, Task, Window,
 };
-use std::{
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 gpui_kit::actions!(picker, [ModalNext, ModalPrevious]);
 
 struct Captured {
-    point: Point,
-    position: [f64; 2],
+    point: CapturedPoint,
     name: Entity<InputState>,
-}
-struct PendingSave {
-    path: PathBuf,
-    snapshot: DiskSnapshot,
-    text: String,
-    route: Route,
-    cache: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FeedbackKind {
@@ -39,7 +28,6 @@ enum FeedbackKind {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Confirmation {
-    Overwrite,
     Clear,
     Close,
 }
@@ -73,9 +61,8 @@ pub struct Picker {
     paths: AppPaths,
     windows: Vec<win::WindowInfo>,
     target: Option<win::WindowInfo>,
+    active: Option<PickerTarget>,
     points: Vec<Captured>,
-    stem: Entity<InputState>,
-    name: Entity<InputState>,
     search: Entity<InputState>,
     status: SharedString,
     status_kind: FeedbackKind,
@@ -83,14 +70,16 @@ pub struct Picker {
     sample_state: SampleState,
     hotkey: Option<HotkeyService>,
     countdown: Option<Countdown>,
-    // Incremented whenever an interaction invalidates an in-flight sample/command.
     interaction_epoch: u64,
     busy: bool,
-    dirty: bool,
+    file: Option<PickerFile>,
+    revision: u64,
+    saved_revision: u64,
+    persist_due: Option<Instant>,
+    persisting: bool,
+    persistence_error: Option<SharedString>,
+    closing: bool,
     confirmation: Option<Confirmation>,
-    close_after_save: bool,
-    pending: Option<PendingSave>,
-    saved: Option<(PathBuf, DiskSnapshot)>,
     library_open: Option<bool>,
     point_scroll: ScrollHandle,
     confirm_focus: FocusHandle,
@@ -100,6 +89,8 @@ pub struct Picker {
     _subscriptions: Vec<Subscription>,
     point_subscriptions: Vec<Subscription>,
     job: Option<Task<()>>,
+    persist_job: Option<Task<()>>,
+    clipboard_job: Option<Task<()>>,
     poll: Option<Task<()>>,
 }
 impl Picker {
@@ -108,47 +99,21 @@ impl Picker {
             gpui_kit::KeyBinding::new("tab", ModalNext, Some("PickerConfirmation")),
             gpui_kit::KeyBinding::new("shift-tab", ModalPrevious, Some("PickerConfirmation")),
         ]);
-        let stem = cx.new(|cx| InputState::new(window, cx).default_value("新采集路线"));
-        let name = cx.new(|cx| InputState::new(window, cx).default_value("新采集路线"));
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索标题或进程"));
-        let mut subscriptions = Vec::new();
-        for field in [&stem, &name] {
-            subscriptions.push(cx.subscribe(field, |v, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    v.dirty = true;
-                    cx.notify();
-                }
-            }));
-        }
-        subscriptions.push(cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify()));
+        let subscriptions = vec![cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify())];
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |w, cx| {
-            weak.update(cx, |v, cx| {
-                if v.busy {
-                    v.feedback(FeedbackKind::Info, "正在处理，请完成后再关闭");
-                    cx.notify();
-                    false
-                } else if v.confirmation.is_some() {
-                    v.confirm_focus.focus(w, cx);
-                    false
-                } else if v.dirty {
-                    v.begin_confirmation(Confirmation::Close, w, cx);
-                    false
-                } else {
-                    true
-                }
-            })
-            .unwrap_or(true)
+            weak.update(cx, |v, cx| v.request_close(w, cx))
+                .unwrap_or(true)
         });
         let mut view = Self {
             paths,
             windows: Vec::new(),
             target: None,
+            active: None,
             points: Vec::new(),
-            stem,
-            name,
             search,
-            status: "选择目标窗口，然后开始采点".into(),
+            status: "正在读取已采集点位…".into(),
             status_kind: FeedbackKind::Info,
             coordinates: "未选择目标窗口".into(),
             sample_state: SampleState::Unselected,
@@ -156,11 +121,14 @@ impl Picker {
             countdown: None,
             interaction_epoch: 0,
             busy: false,
-            dirty: false,
+            file: None,
+            revision: 0,
+            saved_revision: 0,
+            persist_due: None,
+            persisting: false,
+            persistence_error: None,
+            closing: false,
             confirmation: None,
-            close_after_save: false,
-            pending: None,
-            saved: None,
             library_open: None,
             point_scroll: ScrollHandle::new(),
             confirm_focus: cx.focus_handle(),
@@ -170,26 +138,27 @@ impl Picker {
             _subscriptions: subscriptions,
             point_subscriptions: Vec::new(),
             job: None,
+            persist_job: None,
+            clipboard_job: None,
             poll: None,
         };
-        view.refresh(window, cx);
+        view.load(window, cx);
         view.poll = Some(cx.spawn_in(window, async move |weak, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(50))
                     .await;
                 let Ok((target, capture, selecting, epoch, countdown_due)) =
-                    weak.update_in(cx, |v, _, _| {
+                    weak.update_in(cx, |v, w, cx| {
+                        if v.persist_due.is_some_and(|due| Instant::now() >= due) {
+                            v.persist(w, cx);
+                        }
                         let mut events = 0;
-                        // Always drain the queue, including while confirmation/save is active.
                         if let Some(service) = &v.hotkey {
                             while service.try_recv().is_ok() {
                                 events += 1;
                             }
                         }
-                        // The poll awaits this one background sample before dispatching
-                        // another. Keep the timer visible/cancellable until its result
-                        // commits, including the interval after the deadline.
                         let due = v
                             .countdown
                             .filter(|c| Instant::now() >= c.deadline)
@@ -229,8 +198,6 @@ impl Picker {
                     .await;
                 if weak
                     .update_in(cx, |v, w, cx| {
-                        // A cancelled countdown, dialog, save or new target must invalidate
-                        // events that were already dispatched to the background executor.
                         if !accept_sample(
                             epoch,
                             v.interaction_epoch,
@@ -244,7 +211,7 @@ impl Picker {
                         }
                         if selecting && !v.locked() {
                             if let Some(target) = result.0 {
-                                v.choose(target, cx);
+                                v.choose(target, w, cx);
                             } else {
                                 v.feedback(FeedbackKind::Error, "未找到可用窗口，请重试准星选窗");
                             }
@@ -295,16 +262,166 @@ impl Picker {
         self.status = message.into();
     }
     fn locked(&self) -> bool {
-        self.busy || self.confirmation.is_some() || self.pending.is_some()
+        self.busy || self.file.is_none() || self.closing || self.confirmation.is_some()
     }
     fn invalidate_commands(&mut self) {
         self.countdown = None;
         self.interaction_epoch = self.interaction_epoch.wrapping_add(1);
-        // Discard commands queued before a lock began/ended, even if the next
-        // poll happens only after a very quick operation has already completed.
         if let Some(service) = &self.hotkey {
             while service.try_recv().is_ok() {}
         }
+    }
+    fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.file.is_some() {
+            return;
+        }
+        self.busy = true;
+        self.persistence_error = None;
+        let paths = self.paths.clone();
+        self.job = Some(cx.spawn_in(window, async move |weak, cx| {
+            let (file, windows) = cx
+                .background_spawn(async move { (PickerFile::open(&paths), win::list_windows()) })
+                .await;
+            let _ = weak.update_in(cx, |v, w, cx| {
+                v.busy = false;
+                match file {
+                    Ok(file) => {
+                        v.active = file.state.last_target.clone();
+                        v.file = Some(file);
+                        v.restore_points(w, cx);
+                        v.feedback(
+                            FeedbackKind::Info,
+                            if v.active.is_some() {
+                                "已恢复点位，重新选择对应窗口后可继续采点"
+                            } else {
+                                "选择目标窗口，然后开始采点；点位自动保存"
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        v.persistence_error = Some(
+                            format!("读取点位失败：{e:#}。原文件已保留，请修复后重新读取").into(),
+                        );
+                    }
+                }
+                match windows {
+                    Ok(windows) => {
+                        v.windows = windows
+                            .into_iter()
+                            .filter(|w| w.pid != std::process::id())
+                            .collect()
+                    }
+                    Err(e) => v.feedback(FeedbackKind::Error, format!("窗口枚举失败：{e}")),
+                }
+                cx.notify();
+            });
+        }));
+    }
+    fn restore_points(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.point_subscriptions.clear();
+        self.points.clear();
+        let points = self
+            .active
+            .as_ref()
+            .and_then(|target| self.file.as_ref()?.state.group(target))
+            .map(|g| g.points.clone())
+            .unwrap_or_default();
+        for point in points {
+            self.add_row(point, window, cx);
+        }
+        self.point_scroll.scroll_to_bottom();
+    }
+    fn add_row(&mut self, point: CapturedPoint, window: &mut Window, cx: &mut Context<Self>) {
+        let name = cx.new(|cx| InputState::new(window, cx).default_value(point.name.clone()));
+        self.point_subscriptions
+            .push(cx.subscribe(&name, |v, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) && !v.locked() {
+                    v.changed(Duration::from_millis(300), cx);
+                    cx.notify();
+                }
+            }));
+        self.points.push(Captured { point, name });
+    }
+    fn sync_points(&mut self, cx: &Context<Self>) {
+        if let (Some(file), Some(target)) = (&mut self.file, &self.active) {
+            let points = self
+                .points
+                .iter()
+                .map(|row| CapturedPoint {
+                    name: row.name.read(cx).value().to_string(),
+                    ..row.point.clone()
+                })
+                .collect();
+            file.state.set_points(target.clone(), points);
+        }
+    }
+    fn changed(&mut self, delay: Duration, cx: &Context<Self>) {
+        self.sync_points(cx);
+        self.revision = self.revision.wrapping_add(1);
+        self.persist_due = Some(Instant::now() + delay);
+    }
+    fn persist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.persisting || self.revision == self.saved_revision || self.file.is_none() {
+            return;
+        }
+        self.sync_points(cx);
+        let current = self.file.as_ref().unwrap();
+        let mut file = PickerFile {
+            state: current.state.clone(),
+            snapshot: current.snapshot.clone(),
+        };
+        let paths = self.paths.clone();
+        let revision = self.revision;
+        self.persist_due = None;
+        self.persisting = true;
+        self.persist_job = Some(cx.spawn_in(window, async move |weak, cx| {
+            let result = cx.background_spawn(async move { file.save(&paths).map(|_| file.snapshot) }).await;
+            let _ = weak.update_in(cx, |v, w, cx| {
+                v.persisting = false;
+                match result {
+                    Ok(snapshot) => {
+                        v.file.as_mut().unwrap().snapshot = snapshot;
+                        v.saved_revision = revision;
+                        v.persistence_error = None;
+                        if v.revision != v.saved_revision {
+                            // A newer mutation arrived while this snapshot was being written.
+                            v.persist_due = Some(Instant::now());
+                        } else if v.closing { w.remove_window(); }
+                    }
+                    Err(e) => {
+                        v.persist_due = None;
+                        v.persistence_error = Some(format!("自动保存失败：{e:#}。点位仍在内存中，可复制或重试；如文件被外部修改，请保留坐标后重新打开").into());
+                        if v.closing {
+                            v.closing = false;
+                            v.begin_confirmation(Confirmation::Close, w, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+    fn retry_persistence(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file.is_none() {
+            self.load(window, cx);
+        } else {
+            self.persist(window, cx);
+        }
+    }
+    fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.confirmation.is_some() {
+            self.confirm_focus.focus(window, cx);
+            return false;
+        }
+        self.invalidate_commands();
+        if self.revision == self.saved_revision {
+            return true;
+        }
+        self.closing = true;
+        self.feedback(FeedbackKind::Info, "正在保存最新点位，完成后关闭…");
+        self.persist(window, cx);
+        cx.notify();
+        false
     }
     fn start_countdown(&mut self, kind: CountdownKind, cx: &mut Context<Self>) {
         if self.locked()
@@ -330,7 +447,6 @@ impl Picker {
         cx.notify();
     }
     fn cancel_countdown(&mut self, cx: &mut Context<Self>) {
-        // Also invalidate a due command whose background sampling has started.
         self.invalidate_commands();
         self.feedback(FeedbackKind::Info, "已取消倒计时");
         cx.notify();
@@ -367,7 +483,7 @@ impl Picker {
             });
         }));
     }
-    fn choose(&mut self, target: win::WindowInfo, cx: &mut Context<Self>) {
+    fn choose(&mut self, target: win::WindowInfo, window: &mut Window, cx: &mut Context<Self>) {
         if self.locked() {
             return;
         }
@@ -376,56 +492,65 @@ impl Picker {
             cx.notify();
             return;
         }
-        let changed = target_key(self.target.as_ref()) != target_key(Some(&target));
-        if changed && !self.points.is_empty() {
-            self.feedback(
-                FeedbackKind::Error,
-                "已有点位属于当前目标。请先保存需要的点位，再清空后更换目标",
-            );
-            cx.notify();
-            return;
-        }
         if !target.is_alive() {
             self.feedback(FeedbackKind::Error, "目标窗口已关闭，请刷新后重新选择");
             cx.notify();
             return;
         }
+        if target.process.is_empty() && target.class.is_empty() {
+            self.feedback(
+                FeedbackKind::Error,
+                "无法识别目标应用及窗口类型，请选择其他窗口",
+            );
+            cx.notify();
+            return;
+        }
+        let key = PickerTarget::new(
+            target.process.clone(),
+            target.class.clone(),
+            target.title.clone(),
+        );
         self.invalidate_commands();
+        self.sync_points(cx);
+        self.active = Some(key);
+        self.restore_points(window, cx);
+        self.target = Some(target);
+        self.changed(Duration::ZERO, cx);
         self.feedback(
             FeedbackKind::Success,
-            format!("已选择 {}，将光标移入目标客户区开始采点", target.title),
+            format!(
+                "已选择 {}，恢复 {} 个点位；将光标移入客户区可继续采点",
+                self.active.as_ref().unwrap().title,
+                self.points.len()
+            ),
         );
-        self.target = Some(target);
         self.sample_state = SampleState::Unavailable("将光标移入目标客户区".into());
         self.coordinates = "将光标移入目标客户区".into();
-        self.dirty |= changed;
         cx.notify();
     }
-    fn append(&mut self, pos: [f64; 2], window: &mut Window, cx: &mut Context<Self>) {
-        let id = self
+    fn append(&mut self, position: [f64; 2], window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
             .points
             .iter()
             .map(|p| p.point.id)
             .max()
             .unwrap_or(0)
-            .saturating_add(1);
-        let mut point = Point::new(id);
-        point.operations.push(Operation::new(OpKind::Click, pos));
-        let name = cx.new(|cx| InputState::new(window, cx).default_value(point.name.clone()));
-        self.point_subscriptions
-            .push(cx.subscribe(&name, |v, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
-                    v.dirty = true;
-                    cx.notify();
-                }
-            }));
-        self.points.push(Captured {
-            point,
-            position: pos,
-            name,
-        });
+            .checked_add(1)
+        else {
+            self.feedback(FeedbackKind::Error, "点位编号已达上限");
+            return;
+        };
+        self.add_row(
+            CapturedPoint {
+                id,
+                name: format!("点位 {id}"),
+                position,
+            },
+            window,
+            cx,
+        );
         self.point_scroll.scroll_to_bottom();
-        self.dirty = true;
+        self.changed(Duration::ZERO, cx);
         self.feedback(
             FeedbackKind::Success,
             format!("已采集 {} 个点位", self.points.len()),
@@ -435,21 +560,48 @@ impl Picker {
         if self.locked() {
             return;
         }
-        if let Some(row) = self.points.get(index) {
-            let text = format!(
-                "id: {}\nname: {}\noperations:\n  - type: click\n    pos: [{:.6}, {:.6}]",
-                row.point.id,
-                serde_json::json!(row.name.read(cx).value().to_string()),
-                row.position[0],
-                row.position[1]
-            );
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-            self.feedback(
-                FeedbackKind::Success,
-                format!("已复制第 {} 个点位", index + 1),
-            );
-            cx.notify();
-        }
+        let Some(row) = self.points.get(index) else {
+            return;
+        };
+        let text = coordinate_text(row.point.position);
+        // The Windows GPUI clipboard API silently returns when OpenClipboard
+        // fails. A short asynchronous retry avoids losing a click to another
+        // clipboard reader, and a newer copy cancels this task.
+        self.clipboard_job = None;
+        self.feedback(FeedbackKind::Info, "正在复制坐标…");
+        self.clipboard_job = Some(cx.spawn(async move |weak, cx| {
+            for attempt in 0..9 {
+                if attempt > 0 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(40))
+                        .await;
+                }
+                let Ok(done) = weak.update(cx, |v, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    let copied = cx
+                        .read_from_clipboard()
+                        .and_then(|item| item.text())
+                        .as_deref()
+                        == Some(text.as_str());
+                    if copied {
+                        v.feedback(
+                            FeedbackKind::Success,
+                            format!("已复制第 {} 个点位的坐标，可粘贴到路线管理", index + 1),
+                        );
+                    } else if attempt == 8 {
+                        v.feedback(FeedbackKind::Error, "复制失败：剪贴板正被占用，请重试");
+                    }
+                    cx.notify();
+                    copied
+                }) else {
+                    return;
+                };
+                if done {
+                    return;
+                }
+            }
+        }));
+        cx.notify();
     }
     fn remove_point(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.locked() || index >= self.points.len() {
@@ -457,7 +609,7 @@ impl Picker {
         }
         self.points.remove(index);
         drop(self.point_subscriptions.remove(index));
-        self.dirty = true;
+        self.changed(Duration::ZERO, cx);
         self.feedback(
             FeedbackKind::Info,
             format!("已删除点位，剩余 {} 个", self.points.len()),
@@ -475,11 +627,14 @@ impl Picker {
         }
         self.points.clear();
         self.point_subscriptions.clear();
-        self.dirty = true;
+        self.changed(Duration::ZERO, cx);
         self.confirmation = None;
         self.invalidate_commands();
         self.restore_focus(window, cx);
-        self.feedback(FeedbackKind::Info, "已清空采点，可以继续采点或更换目标");
+        self.feedback(
+            FeedbackKind::Info,
+            "已清空当前窗口的采点，其他窗口点位已保留",
+        );
         cx.notify();
     }
     fn begin_confirmation(
@@ -506,11 +661,10 @@ impl Picker {
             return;
         }
         self.confirmation = None;
-        self.pending = None;
-        self.close_after_save = false;
+        self.closing = false;
         self.invalidate_commands();
         self.restore_focus(window, cx);
-        self.feedback(FeedbackKind::Info, "已取消操作，编辑内容已保留");
+        self.feedback(FeedbackKind::Info, "已取消操作，点位内容已保留");
         cx.notify();
     }
     fn cycle_confirmation(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -527,17 +681,16 @@ impl Picker {
         };
         handles[next].focus(window, cx);
     }
-    fn save_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || self.confirmation != Some(Confirmation::Close) {
+    fn retry_and_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirmation != Some(Confirmation::Close) {
             return;
         }
         self.confirmation = None;
         self.restore_focus(window, cx);
-        self.close_after_save = true;
-        self.save(false, window, cx);
+        self.request_close(window, cx);
     }
     fn discard_and_close(&mut self, window: &mut Window, _: &mut Context<Self>) {
-        if !self.busy && self.confirmation == Some(Confirmation::Close) {
+        if !self.persisting && self.confirmation == Some(Confirmation::Close) {
             self.invalidate_commands();
             window.remove_window();
         }
@@ -574,187 +727,9 @@ impl Picker {
             });
         }));
     }
-    fn route(&self, cx: &Context<Self>) -> Result<Route> {
-        let target = self.target.as_ref().context("请先选择目标窗口")?;
-        ensure!(target.is_alive(), "目标窗口已失效，请重新选择");
-        let mut route = Route::draft(self.name.read(cx).value().to_string());
-        route.target = Target {
-            process: target.process.clone(),
-            window_class: target.class.clone(),
-            title: target.title.clone(),
-        };
-        route.points = self
-            .points
-            .iter()
-            .map(|row| {
-                let mut p = row.point.clone();
-                p.name = row.name.read(cx).value().to_string();
-                p
-            })
-            .collect();
-        route.validate()?;
-        Ok(route)
-    }
-    fn save(&mut self, export: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.locked() {
-            return;
-        }
-        self.invalidate_commands();
-        let prepared = self
-            .route(cx)
-            .and_then(|route| route.yaml().map(|text| (route, text)));
-        let (route, text) = match prepared {
-            Ok(prepared) => prepared,
-            Err(e) => {
-                self.close_after_save = false;
-                self.feedback(FeedbackKind::Error, format!("保存失败：{e:#}"));
-                cx.notify();
-                return;
-            }
-        };
-        let paths = self.paths.clone();
-        let stem = self.stem.read(cx).value().to_string();
-        let saved = self.saved.clone();
-        let receiver = if export {
-            Some(cx.prompt_for_new_path(&paths.routes(), Some("采集路线.yaml")))
-        } else {
-            None
-        };
-        self.busy = true;
-        self.feedback(FeedbackKind::Info, "正在保存路线…");
-        self.job = Some(cx.spawn_in(window, async move |weak, cx| {
-            let path = if let Some(receiver) = receiver {
-                match receiver.await {
-                    Ok(Ok(Some(p))) => Ok(Some(p)),
-                    Ok(Ok(None)) => Ok(None),
-                    _ => Err(anyhow::anyhow!("导出对话框失败")),
-                }
-            } else {
-                paths.route_path(&stem).map(Some)
-            };
-            let result = match path {
-                Ok(Some(path)) => Some(
-                    cx.background_spawn(async move {
-                        let snapshot = if let Some((old_path, old_snapshot)) =
-                            saved.filter(|(p, _)| p == &path)
-                        {
-                            ensure!(
-                                old_snapshot.unchanged(&old_path)?,
-                                "目标文件已被外部修改，请更换文件名或导出到其他文件"
-                            );
-                            old_snapshot
-                        } else {
-                            DiskSnapshot::read(&path)?
-                        };
-                        let exists = snapshot.0.is_some();
-                        Ok::<_, anyhow::Error>((
-                            PendingSave {
-                                path,
-                                snapshot,
-                                text,
-                                route,
-                                cache: !export,
-                            },
-                            exists,
-                        ))
-                    })
-                    .await,
-                ),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            };
-            let _ = weak.update_in(cx, |v, w, cx| {
-                v.invalidate_commands();
-                v.busy = false;
-                match result {
-                    Some(Ok((pending, exists))) => {
-                        let known = v.saved.as_ref().is_some_and(|(p, _)| p == &pending.path);
-                        v.pending = Some(pending);
-                        if exists && !known {
-                            v.begin_confirmation(Confirmation::Overwrite, w, cx);
-                        } else {
-                            v.commit(w, cx);
-                        }
-                    }
-                    Some(Err(e)) => {
-                        v.close_after_save = false;
-                        v.feedback(FeedbackKind::Error, format!("保存失败：{e:#}"));
-                    }
-                    None => {
-                        v.close_after_save = false;
-                        v.feedback(FeedbackKind::Info, "已取消导出，编辑内容已保留");
-                    }
-                }
-                cx.notify();
-            });
-        }));
-    }
-    fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
-            return;
-        }
-        let Some(pending) = self.pending.take() else {
-            return;
-        };
-        self.confirmation = None;
-        self.restore_focus(window, cx);
-        self.invalidate_commands();
-        self.busy = true;
-        self.feedback(FeedbackKind::Info, "正在写入路线与执行缓存…");
-        let paths = self.paths.clone();
-        self.job = Some(cx.spawn_in(window, async move |weak, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    let snapshot = storage::save_atomic(
-                        &pending.path,
-                        &pending.snapshot,
-                        pending.text.as_bytes(),
-                        true,
-                    )?;
-                    let cache_error = if pending.cache {
-                        pending
-                            .path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .and_then(|stem| {
-                                storage::cache_route(&paths, stem, &pending.route).err()
-                            })
-                            .map(|e| {
-                                format!("路线已保存；执行缓存更新失败：{e:#}。请再次保存以重试")
-                            })
-                    } else {
-                        None
-                    };
-                    Ok::<_, anyhow::Error>((pending.path, snapshot, cache_error))
-                })
-                .await;
-            let _ = weak.update_in(cx, |v, w, cx| {
-                v.invalidate_commands();
-                v.busy = false;
-                let close_requested = std::mem::take(&mut v.close_after_save);
-                match result {
-                    Ok((path, snapshot, note)) => {
-                        v.saved = Some((path.clone(), snapshot));
-                        v.dirty = note.is_some();
-                        let close = should_close_after_save(close_requested, true, note.is_none());
-                        if let Some(note) = note {
-                            v.feedback(FeedbackKind::Error, note);
-                        } else {
-                            v.feedback(
-                                FeedbackKind::Success,
-                                format!("已保存：{}", path.display()),
-                            );
-                        }
-                        if close {
-                            w.remove_window();
-                        }
-                    }
-                    Err(e) => v.feedback(FeedbackKind::Error, format!("保存失败：{e:#}")),
-                }
-                cx.notify();
-            });
-        }));
-    }
+}
+fn coordinate_text(position: [f64; 2]) -> String {
+    format!("[{:.6}, {:.6}]", position[0], position[1])
 }
 fn target_key(target: Option<&win::WindowInfo>) -> Option<(isize, u32)> {
     target.map(|t| (t.hwnd, t.pid))
@@ -773,9 +748,6 @@ fn take_due(countdown: &mut Option<Countdown>, now: Instant) -> Option<Countdown
     } else {
         None
     }
-}
-fn should_close_after_save(requested: bool, source_saved: bool, cache_saved: bool) -> bool {
-    requested && source_saved && cache_saved
 }
 fn sample(target: Option<&win::WindowInfo>, screen: Option<(i32, i32)>) -> Result<Sample> {
     let target = target.context("未选择目标窗口")?;
@@ -798,6 +770,28 @@ impl Render for Picker {
 mod tests {
     use super::*;
     #[test]
+    fn copied_coordinates_are_directly_usable_action_parameters() {
+        for pos in [[0.123456789, 0.987654321], [0.0, 1.0]] {
+            let text = coordinate_text(pos);
+            let parsed: [f64; 2] = serde_json::from_str(&text).unwrap();
+            for i in 0..2 {
+                assert!((parsed[i] - pos[i]).abs() <= 0.000001);
+            }
+            let mut route = game_helper_core::route::Route::draft("复制坐标");
+            route.target.process = "game.exe".into();
+            let mut point = game_helper_core::route::Point::new(1);
+            point
+                .operations
+                .push(game_helper_core::route::Operation::new(
+                    game_helper_core::route::OpKind::Click,
+                    parsed,
+                ));
+            route.points.push(point);
+            route.validate().unwrap();
+        }
+        assert_eq!(coordinate_text([0.0, 1.0]), "[0.000000, 1.000000]");
+    }
+    #[test]
     fn countdown_runs_once_and_cancellation_removes_due_event() {
         let now = Instant::now();
         let timer = Countdown {
@@ -811,7 +805,7 @@ mod tests {
             take_due(&mut pending, now + Duration::from_millis(1999)),
             None
         );
-        pending = None; // Cancel just before expiry.
+        pending = None;
         assert_eq!(take_due(&mut pending, now + Duration::from_secs(3)), None);
         pending = Some(timer);
         assert_eq!(
@@ -827,12 +821,5 @@ mod tests {
         assert!(!accept_sample(4, 5, original, original));
         assert!(!accept_sample(4, 4, original, Some((102, 12))));
         assert!(!accept_sample(4, 4, original, Some((101, 13))));
-    }
-    #[test]
-    fn close_intent_requires_successful_source_and_cache_save() {
-        assert!(should_close_after_save(true, true, true));
-        assert!(!should_close_after_save(false, true, true));
-        assert!(!should_close_after_save(true, false, true));
-        assert!(!should_close_after_save(true, true, false));
     }
 }

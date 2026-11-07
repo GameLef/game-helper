@@ -141,7 +141,7 @@ impl Picker {
                                     .text_color(color(MUTED)),
                             ),
                     )
-                    .on_click(cx.listener(move |v, _, _, cx| v.choose(target.clone(), cx))),
+                    .on_click(cx.listener(move |v, _, w, cx| v.choose(target.clone(), w, cx))),
             );
         }
         if visible == 0 {
@@ -238,11 +238,21 @@ impl Picker {
                 );
                 (title, detail, full_name)
             }
-            None => (
-                "选择目标窗口".into(),
-                "从窗口库选择，或使用准星定位目标。".into(),
-                "尚未选择目标窗口".into(),
-            ),
+            None => match &self.active {
+                Some(target) => (
+                    target.title.clone(),
+                    format!("{}  ·  已恢复点位，尚未连接窗口", target.process),
+                    format!(
+                        "已恢复目标：{}，{}，请重新选择窗口后采点",
+                        target.title, target.process
+                    ),
+                ),
+                None => (
+                    "选择目标窗口".into(),
+                    "从窗口库选择，或使用准星定位目标。".into(),
+                    "尚未选择目标窗口".into(),
+                ),
+            },
         };
         column()
             .gap_3()
@@ -490,15 +500,27 @@ impl Picker {
                         ),
                     )
                     .child(
-                        column()
-                            .w(px(108.))
+                        control(format!("copy-coordinate-{point_id}"), "", self.locked())
+                            .ghost()
+                            .h_auto()
+                            .w(px(120.))
                             .flex_shrink_0()
-                            .gap_1()
-                            .font_family("Cascadia Mono")
-                            .text_size(px(12.))
-                            .text_color(color(MUTED))
-                            .child(format!("nx  {:.6}", captured.position[0]))
-                            .child(format!("ny  {:.6}", captured.position[1])),
+                            .accessibility_label(format!(
+                                "复制第 {} 个点位坐标 {}",
+                                index + 1,
+                                coordinate_text(captured.point.position)
+                            ))
+                            .tooltip("复制坐标，可直接粘贴到路线管理")
+                            .child(
+                                column()
+                                    .gap_1()
+                                    .font_family("Cascadia Mono")
+                                    .text_size(px(12.))
+                                    .text_color(color(MUTED))
+                                    .child(format!("nx  {:.6}", captured.point.position[0]))
+                                    .child(format!("ny  {:.6}", captured.point.position[1])),
+                            )
+                            .on_click(cx.listener(move |v, _, _, cx| v.copy_point(index, cx))),
                     )
                     .child(
                         row()
@@ -513,7 +535,7 @@ impl Picker {
                                         index + 1,
                                         name
                                     ))
-                                    .tooltip("复制此点位的 YAML")
+                                    .tooltip("复制坐标，可直接粘贴到路线管理")
                                     .on_click(
                                         cx.listener(move |v, _, _, cx| v.copy_point(index, cx)),
                                     ),
@@ -550,7 +572,9 @@ impl Picker {
                     .child(muted(
                         "选择目标窗口后，使用「2秒后采点」或 Ctrl+Alt+P 记录位置。",
                     ))
-                    .child(muted("采集后可在这里修改点位名称、复制或删除。")),
+                    .child(muted(
+                        "按应用和完整窗口标题自动保存；点击坐标可复制到路线管理。",
+                    )),
             );
         }
         column()
@@ -567,7 +591,15 @@ impl Picker {
                     .child(
                         row()
                             .gap_3()
-                            .child(muted(format!("{} 个 · 按采集顺序", self.points.len())))
+                            .child(muted(format!(
+                                "{} 个 · {}",
+                                self.points.len(),
+                                if self.revision == self.saved_revision {
+                                    "已自动保存"
+                                } else {
+                                    "等待自动保存"
+                                }
+                            )))
                             .child(
                                 control(
                                     "clear-picker",
@@ -600,69 +632,6 @@ impl Picker {
             )
     }
 
-    fn save_footer(&self, cx: &Context<Self>) -> Div {
-        let locked = self.locked();
-        let cannot_save = locked || self.countdown.is_some() || self.target.is_none();
-        column()
-            .gap_2()
-            .p_4()
-            .flex_shrink_0()
-            .bg(color(PAPER))
-            .border_t_1()
-            .border_color(color(LINE))
-            .child(
-                row()
-                    .items_end()
-                    .gap_3()
-                    .child(
-                        column().flex_1().gap_1().child(muted("路线名称")).child(
-                            Input::new(&self.name)
-                                .id("picker-name")
-                                .accessibility_id("picker-name")
-                                .aria_label("路线名称")
-                                .disabled(locked)
-                                .w_full(),
-                        ),
-                    )
-                    .child(
-                        column().flex_1().gap_1().child(muted("文件名")).child(
-                            row()
-                                .gap_1()
-                                .child(
-                                    div().flex_1().min_w_0().child(
-                                        Input::new(&self.stem)
-                                            .id("picker-stem")
-                                            .accessibility_id("picker-stem")
-                                            .aria_label("文件名，不含扩展名")
-                                            .disabled(locked)
-                                            .w_full(),
-                                    ),
-                                )
-                                .child(muted(".yaml").flex_shrink_0()),
-                        ),
-                    )
-                    .child(
-                        control("save-picker", "保存路线", cannot_save)
-                            .primary()
-                            .on_click(cx.listener(|v, _, w, cx| v.save(false, w, cx))),
-                    )
-                    .child(
-                        control("export-picker", "导出…", cannot_save)
-                            .on_click(cx.listener(|v, _, w, cx| v.save(true, w, cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(color(if self.dirty { AMBER } else { MUTED }))
-                    .child(if self.dirty {
-                        "有未保存修改"
-                    } else {
-                        "无待保存修改"
-                    }),
-            )
-    }
-
     fn picker_confirmation(&self, cx: &Context<Self>) -> impl IntoElement {
         let mut choices = row().justify_end().gap_2();
         let (title, message) = match self.confirmation.as_ref().expect("picker confirmation") {
@@ -674,44 +643,30 @@ impl Picker {
                         .on_click(cx.listener(|v, _, w, cx| v.confirm_clear(w, cx))),
                 );
                 (
-                    "清空全部采点？",
-                    format!("将移除当前 {} 个点位。此操作无法撤销。", self.points.len()),
-                )
-            }
-            Confirmation::Overwrite => {
-                choices = choices.child(
-                    control("confirm-overwrite", "确认覆盖", self.busy)
-                        .primary()
-                        .track_focus(&self.confirm_primary_focus)
-                        .on_click(cx.listener(|v, _, w, cx| v.commit(w, cx))),
-                );
-                let path = self
-                    .pending
-                    .as_ref()
-                    .map(|pending| pending.path.display().to_string())
-                    .unwrap_or_default();
-                (
-                    "覆盖已有路线？",
-                    format!("目标文件已存在：\n{path}\n\n确认覆盖会保留原文件备份。"),
+                    "清空当前窗口采点？",
+                    format!(
+                        "将移除当前窗口的 {} 个点位并自动保存。其他窗口的点位保留，此操作无法撤销。",
+                        self.points.len()
+                    ),
                 )
             }
             Confirmation::Close => {
                 choices = choices
                     .child(
-                        control("save-close", "保存并关闭", self.busy)
+                        control("retry-close", "重试并关闭", self.persisting)
                             .primary()
                             .track_focus(&self.confirm_primary_focus)
-                            .on_click(cx.listener(|v, _, w, cx| v.save_and_close(w, cx))),
+                            .on_click(cx.listener(|v, _, w, cx| v.retry_and_close(w, cx))),
                     )
                     .child(
-                        control("discard-close", "放弃并关闭", self.busy)
+                        control("discard-close", "放弃未保存修改并关闭", self.persisting)
                             .danger()
                             .track_focus(&self.confirm_discard_focus)
                             .on_click(cx.listener(|v, _, w, cx| v.discard_and_close(w, cx))),
                     );
                 (
-                    "保存采点后关闭？",
-                    "当前路线有未保存修改。保存后关闭，或放弃本次修改。".into(),
+                    "点位自动保存失败",
+                    "最新点位仍在内存中。可以重试后关闭，或继续编辑并复制需要的坐标。放弃未保存修改将丢失尚未写入磁盘的更改。".into(),
                 )
             }
         };
@@ -774,16 +729,22 @@ impl Picker {
             .min_w_0()
             .child(self.target_header(show_library, cx))
             .child(self.coordinate_panel(cx))
-            .child(self.captured_points(cx))
-            .child(self.save_footer(cx));
+            .child(self.captured_points(cx));
         let mut body = row().items_stretch().gap_0().flex_1().min_h_0().min_w_0();
         if show_library {
             body = body.child(self.window_library(cx));
         }
         body = body.child(workspace);
-        let status = self.status.clone();
+        let status = self
+            .persistence_error
+            .clone()
+            .unwrap_or_else(|| self.status.clone());
         let status_tooltip = status.clone();
-        let status_color = match self.status_kind {
+        let status_color = match if self.persistence_error.is_some() {
+            FeedbackKind::Error
+        } else {
+            self.status_kind
+        } {
             FeedbackKind::Info => MUTED,
             FeedbackKind::Success => TEAL,
             FeedbackKind::Error => RED,
@@ -819,7 +780,24 @@ impl Picker {
                         gpui_kit::component::tooltip::Tooltip::new(status_tooltip.clone())
                             .build(window, cx)
                     })
-                    .child(ellipsis(status)),
+                    .child(row().child(ellipsis(status).flex_1()).children(
+                        self.persistence_error.as_ref().map(|_| {
+                            control(
+                                "retry-persistence",
+                                if self.file.is_none() {
+                                    "重新读取"
+                                } else {
+                                    "重试"
+                                },
+                                self.busy
+                                    || self.persisting
+                                    || self.closing
+                                    || self.confirmation.is_some(),
+                            )
+                            .small()
+                            .on_click(cx.listener(|v, _, w, cx| v.retry_persistence(w, cx)))
+                        }),
+                    )),
             );
         if self.confirmation.is_some() {
             root = root.child(gpui_kit::deferred(self.picker_confirmation(cx)).with_priority(2));

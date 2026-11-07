@@ -5,7 +5,7 @@ param(
     [string]$ScreenshotDirectory = 'docs\assets',
     [ValidatePattern('^[A-Za-z0-9_-]+$')][string]$ScreenshotPrefix = 'native-picker'
 )
-# Owns an isolated sandbox, picker and --probe; never starts playback or saves a route.
+# Owns an isolated sandbox, picker and --probe; never starts playback.
 # Run after the parent build is ready. Screenshots use GDI CopyFromScreen.
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -45,6 +45,8 @@ $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
 $picker = $null
 $probe = $null
 $root = $null
+$clipboardBefore = $null
+$restoreClipboard = $false
 $scope = [Windows.Automation.TreeScope]::Descendants
 function Wait-Until([string]$Description, [scriptblock]$Predicate, [int]$TimeoutMs = 8000) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -113,14 +115,38 @@ function Capture-Hotkey([int]$Id, [string]$Name) {
     Set-Value ('point-name-' + $Id) $Name
 }
 function Assert-NewestPoint([int]$Id) {
-    $nameId = 'point-name-' + $Id
-    Assert-Bounds @($nameId, ('copy-point-' + $Id), ('remove-point-' + $Id), 'save-picker', 'export-picker', 'picker-status')
-    $row = (Node $nameId).Current.BoundingRectangle
+    $rowIds = @('point-name-' + $Id; 'copy-coordinate-' + $Id; 'copy-point-' + $Id; 'remove-point-' + $Id)
+    Assert-Bounds ($rowIds + @('picker-status', 'clear-picker'))
     $viewport = (Node 'picker-points').Current.BoundingRectangle
-    if ($row.Top -lt ($viewport.Top - 1) -or $row.Bottom -gt ($viewport.Bottom + 1)) { throw "Newest point $Id is clipped by the scrolling list: $row; viewport $viewport" }
+    foreach ($control in $rowIds) {
+        $rect = (Node $control).Current.BoundingRectangle
+        if ($rect.Top -lt ($viewport.Top - 1) -or $rect.Bottom -gt ($viewport.Bottom + 1) -or $rect.Left -lt ($viewport.Left - 1) -or $rect.Right -gt ($viewport.Right + 1)) { throw "Newest point control $control is clipped by the scrolling list: $rect; viewport $viewport" }
+    }
     $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
     $count = @($root.FindAll($scope, $condition) | Where-Object { $_.Current.AutomationId -match '^point-name-\d+$' }).Count
     if ($count -ne $Id) { throw "Stress capture expected $Id rows, got $count" }
+    Assert-CopiedCoordinates $Id
+}
+function Assert-CopiedCoordinates([int]$Id) {
+    $client = [PickerLayoutNative+Rect]::new()
+    if (-not [PickerLayoutNative]::GetClientRect($probe.MainWindowHandle, [ref]$client)) { throw 'Cannot read dedicated layout probe client bounds' }
+    $expected = @(((100.0 + (($Id * 13) % 250)) / ($client.Right - 1)), ((90.0 + (($Id * 17) % 150)) / ($client.Bottom - 1)))
+    $copies = @()
+    foreach ($control in @('copy-coordinate-' + $Id; 'copy-point-' + $Id)) {
+        $sentinel = 'picker-layout-clipboard-' + [guid]::NewGuid().ToString('N')
+        Set-Clipboard -Value $sentinel
+        Invoke-Id $control
+        Wait-Until "layout coordinate JSON copied by $control" { ([string](Get-Clipboard -Raw)) -cne $sentinel }
+        $text = [string](Get-Clipboard -Raw)
+        if ($text -cnotmatch '^\[([01]\.\d{6}), ([01]\.\d{6})\]$') { throw "Layout copy did not provide six-decimal coordinate JSON: $text" }
+        $pair = ConvertFrom-Json -InputObject $text -NoEnumerate
+        if ($pair -isnot [array] -or $pair.Count -ne 2) { throw 'Layout copy did not provide a coordinate array' }
+        for ($i = 0; $i -lt 2; $i++) {
+            if ([Math]::Abs($pair[$i] - $expected[$i]) -gt 0.000001) { throw "Layout copy changed captured precision: $control" }
+        }
+        $copies += $text
+    }
+    if ($copies[0] -cne $copies[1]) { throw 'Layout coordinate click and copy button disagree' }
 }
 function Resize-Picker([int]$Width, [int]$Height) {
     $scale = [PickerLayoutNative]::GetDpiForWindow($picker.MainWindowHandle) / 96.0
@@ -155,6 +181,7 @@ function Capture([string]$Suffix) {
 }
 try {
     Write-Output "Isolated picker layout sandbox: $appRoot"
+    try { $clipboardBefore = Get-Clipboard -Raw; $restoreClipboard = $true } catch { }
     $probe = Start-Process -FilePath $exe -ArgumentList '--probe' -PassThru
     $owned.Add($probe)
     Wait-Window $probe
@@ -179,8 +206,6 @@ try {
     [PickerLayoutNative]::SetForegroundWindow($probe.MainWindowHandle) | Out-Null
     [PickerLayoutNative]::SetCursorPos($position.X, $position.Y) | Out-Null
     Wait-Until 'layout sample point' { $null -ne (Node 'point-name-1') } 6000
-    Set-Value 'picker-stem' '北风港口采集'
-    Set-Value 'picker-name' '北风港口 · 资源采集'
     Set-Value 'point-name-1' '起点 · 港口入口'
     # Only the owned demo title may appear in screenshots intended for docs.
     Set-Value 'picker-search' $targetTitle
@@ -189,7 +214,7 @@ try {
     $sampleNames = @('木桥南端', '海风码头', '鱼市入口', '旧仓库', '货运栈桥', '灯塔路口', '海岸木箱', '船厂门口', '港口集市', '石阶转角', '瞭望平台', '补给营地', '树林边缘', '山道岔路', '矿石采集点', '滨海小径', '返回港口')
     for ($id = 2; $id -le 18; $id++) { Capture-Hotkey $id ('采集点 · ' + $sampleNames[$id - 2]) }
     [PickerLayoutNative]::SetForegroundWindow($picker.MainWindowHandle) | Out-Null
-    $critical = @('picker-root', 'picker-points', 'coordinates', 'picker-status', 'picker-stem', 'picker-name', 'target-summary', 'screen-coordinate', 'client-coordinate', 'normalized-coordinate', 'hotkey', 'capture', 'toggle-targets', 'save-picker', 'export-picker', 'clear-picker')
+    $critical = @('picker-root', 'picker-points', 'coordinates', 'picker-status', 'target-summary', 'screen-coordinate', 'client-coordinate', 'normalized-coordinate', 'hotkey', 'capture', 'toggle-targets', 'clear-picker')
     $sidebar = @('picker-targets', 'picker-search', 'refresh-windows', 'crosshair')
     Resize-Picker 1120 800
     Wait-Until 'default target sidebar visible' { Visible 'picker-search' }
@@ -215,7 +240,7 @@ try {
     Capture 'compact'
     Invoke-Id 'toggle-targets'
     Wait-Until 'compact target sidebar opens' { Visible 'picker-search' }
-    Assert-Bounds @('picker-search', 'refresh-windows', 'toggle-targets', 'save-picker', 'export-picker', 'clear-picker')
+    Assert-Bounds @('picker-search', 'refresh-windows', 'toggle-targets', 'clear-picker', 'copy-coordinate-19', 'copy-point-19')
     Invoke-Id 'toggle-targets'
     Wait-Until 'compact target sidebar closes' { -not (Visible 'picker-search') }
     Resize-Picker 1120 800
@@ -228,7 +253,7 @@ try {
     Capture 'confirmation'
     Invoke-Id 'cancel-confirmation'
     Wait-Until 'clear confirmation cancelled' { $null -eq (Node 'picker-confirmation') }
-    Write-Output ('Passed: 1120x800 default, 1000/999 sidebar boundary, 900x640 minimum, compact sidebar toggle, 19 Chinese named points with newest row and footer in viewport, critical UIA bounds and confirmation. DPI: ' + [PickerLayoutNative]::GetDpiForWindow($picker.MainWindowHandle))
+    Write-Output ('Passed: 1120x800 default, 1000/999 sidebar boundary, 900x640 minimum, compact sidebar toggle, 19 Chinese named points with complete newest row and both JSON coordinate-copy entries in viewport, critical UIA bounds and confirmation. DPI: ' + [PickerLayoutNative]::GetDpiForWindow($picker.MainWindowHandle))
 } finally {
     foreach ($key in @(0x50, 0x12, 0x11)) { [PickerLayoutNative]::keybd_event($key, 0, 2, [UIntPtr]::Zero) }
     foreach ($process in $owned) {
@@ -238,6 +263,9 @@ try {
             if (-not $process.WaitForExit(1000)) { $process.Kill(); $process.WaitForExit(5000) | Out-Null }
         }
         $process.Dispose()
+    }
+    if ($restoreClipboard) {
+        try { if ($null -eq $clipboardBefore) { Set-Clipboard -Value '' } else { Set-Clipboard -Value $clipboardBefore } } catch { Write-Warning 'Could not restore clipboard text' }
     }
     Write-Output "Sandbox retained for inspection: $appRoot"
 }
