@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory=$true)][int]$TargetProcessId)
+param([Parameter(Mandatory=$true)][int]$TargetProcessId)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding $false
 Add-Type -AssemblyName UIAutomationClient
@@ -40,6 +40,9 @@ function Assert-Control($name) {
  $b=$root.Current.BoundingRectangle
  if($r.IsEmpty -or $r.Left -lt $b.Left -or $r.Right -gt $b.Right -or $r.Top -lt $b.Top -or $r.Bottom -gt $b.Bottom){throw "Control outside window: $name $r, window $b"}
 }
+function Assert-Absent($name) {
+ if($null -ne (Node ([Windows.Automation.AutomationElement]::NameProperty) $name)){throw "Removed control is still present: $name"}
+}
 function Capture($name) {
  $output='.tools/'+$name+'.png'
  & (Join-Path $PSScriptRoot 'inspect-native.ps1') -TargetProcessId $TargetProcessId -OutputPath $output | Out-File (Join-Path $PSScriptRoot ('../.tools/'+$name+'-tree.log')) -Encoding utf8
@@ -48,8 +51,12 @@ function Capture($name) {
 [DesignWindow]::MoveWindow($process.MainWindowHandle,40,40,1280,900,$true)|Out-Null
 Start-Sleep -Milliseconds 350
 Click-Id 'route-Smoke'
+foreach($removed in @('Game Helper','路线工作台','归一化 X','归一化 Y','坐标范围 0–1')){Assert-Absent $removed}
+if($root.Current.Name -match 'Game Helper'){throw 'Brand remains in native title'}
 Assert-Control '保存'
-Assert-Control '执行路线'
+Assert-Absent '执行路线'
+Assert-Control '起始点'
+Assert-Control '保存绑定'
 Assert-Control '试跑选中点'
 Click-Id 'point-0'
 if((Node ([Windows.Automation.AutomationElement]::NameProperty) '上移').Current.IsEnabled){throw 'First point must not move upward'}
@@ -61,7 +68,9 @@ if($null -eq (Node ([Windows.Automation.AutomationElement]::NameProperty) '暂�
 Start-Sleep -Milliseconds 350
 if($null -ne (Node ([Windows.Automation.AutomationElement]::NameProperty) '搜索名称或文件名')){throw 'Compact layout did not collapse route library'}
 Assert-Control '保存'
-Assert-Control '执行路线'
+Assert-Absent '执行路线'
+Assert-Control '起始点'
+Assert-Control '保存绑定'
 Assert-Control '试跑选中点'
 Assert-Control '保存绑定'
 Capture 'manager-compact'

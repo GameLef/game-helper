@@ -1,6 +1,6 @@
 //! route/v1 models and validated YAML/JSON conversion.
 use anyhow::{Context, Result, ensure};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 mod validate;
@@ -28,8 +28,6 @@ pub struct Point {
     pub id: u64,
     pub name: String,
     pub note: String,
-    #[serde(serialize_with = "serialize_anchor")]
-    pub pos: [f64; 2],
     pub operations: Vec<Operation>,
 }
 
@@ -89,10 +87,25 @@ impl Operation {
 }
 
 impl Point {
-    pub fn new(id: u64, pos: [f64; 2]) -> Self {
+    /// Initial position for new spatial actions, inferred from existing actions.
+    /// Points without a click/drag start at the center of the target window.
+    pub fn action_position(&self) -> [f64; 2] {
+        self.operations
+            .iter()
+            .find_map(|op| {
+                let key = match op.kind {
+                    OpKind::Click => "pos",
+                    OpKind::Drag => "from",
+                    _ => return None,
+                };
+                let pair = op.params.get(key)?.as_array()?;
+                Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
+            })
+            .unwrap_or([0.5, 0.5])
+    }
+    pub fn new(id: u64) -> Self {
         Self {
             id,
-            pos,
             name: format!("点位 {id}"),
             note: String::new(),
             operations: Vec::new(),
@@ -127,19 +140,6 @@ impl Route {
         validate::route(value)
     }
     pub fn validate(&self) -> Result<()> {
-        // Validate unrounded values with per-point locations: out-of-range
-        // inputs cannot become valid by rounding. Mirrors the YAML-path errors.
-        for (index, point) in self.points.iter().enumerate() {
-            ensure!(
-                point
-                    .pos
-                    .iter()
-                    .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
-                "points[{index}] #{}({}).pos: 坐标超出 0~1 范围",
-                point.id,
-                point.name
-            );
-        }
         validate::route(&serde_json::to_value(self)?)?;
         Ok(())
     }
@@ -161,16 +161,4 @@ impl Route {
             .unwrap_or(0)
             .saturating_add(1)
     }
-}
-
-fn serialize_anchor<S: Serializer>(
-    pos: &[f64; 2],
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    let rounded = pos.map(|v| {
-        // Decimal formatting rounds the underlying float to six decimal places,
-        // avoiding multiplication-induced halfway errors before ties-to-even.
-        format!("{v:.6}").parse::<f64>().unwrap_or(v)
-    });
-    rounded.serialize(serializer)
 }

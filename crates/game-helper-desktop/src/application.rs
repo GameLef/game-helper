@@ -76,7 +76,7 @@ pub fn run() {
                 None
             } else {
                 Some(gpui_kit::TitlebarOptions {
-                    title: Some("Game Helper · 路线管理".into()),
+                    title: Some("路线管理".into()),
                     ..Default::default()
                 })
             },

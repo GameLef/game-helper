@@ -140,7 +140,7 @@ EXE_RunRoute(route, startAt := 1, only := 0) {
             }
             ptName := EXE_GetStr(pt, "name")
             EXE_Log("POINT #" idx " id=" pt["id"] " name=" ptName)
-            ; 点位 pos 本身不点击，仅作为定位锚；操作序列才是动作
+            ; 点位仅组织操作序列；位置由 click.pos / drag.from / drag.to 决定
             ops := pt.Has("operations") ? pt["operations"] : []
             j := 0
             for op in ops {

@@ -1,7 +1,7 @@
 //! Independent native picker. RegisterHotKey is owned by this window only.
 use anyhow::{Context as _, Result, ensure};
 use game_helper_core::{
-    route::{Point, Route, Target},
+    route::{OpKind, Operation, Point, Route, Target},
     storage::{self, AppPaths, DiskSnapshot},
 };
 use game_helper_windows::{hotkey::HotkeyService, window as win};
@@ -22,6 +22,7 @@ use std::{
 
 struct Captured {
     point: Point,
+    position: [f64; 2],
     name: Entity<InputState>,
 }
 struct PendingSave {
@@ -223,7 +224,8 @@ impl Picker {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        let point = Point::new(id, pos);
+        let mut point = Point::new(id);
+        point.operations.push(Operation::new(OpKind::Click, pos));
         let name = cx.new(|cx| InputState::new(window, cx).default_value(point.name.clone()));
         self.point_subscriptions
             .push(cx.subscribe(&name, |v, _, e: &InputEvent, cx| {
@@ -232,7 +234,11 @@ impl Picker {
                     cx.notify();
                 }
             }));
-        self.points.push(Captured { point, name });
+        self.points.push(Captured {
+            point,
+            position: pos,
+            name,
+        });
         self.dirty = true;
         self.status = format!("已采集 {} 个点位", self.points.len()).into();
     }
@@ -463,8 +469,8 @@ impl Render for Picker {
                     .child(format!(
                         "{} · ({:.6}, {:.6})",
                         i + 1,
-                        row.point.pos[0],
-                        row.point.pos[1]
+                        row.position[0],
+                        row.position[1]
                     ))
                     .child(
                         Input::new(&row.name)
@@ -475,10 +481,11 @@ impl Render for Picker {
                         move |v, _, _, cx| {
                             if let Some(row) = v.points.get(i) {
                                 let text = format!(
-                                    "name: {}\npos: [{:.6}, {:.6}]",
-                                    row.name.read(cx).value(),
-                                    row.point.pos[0],
-                                    row.point.pos[1]
+                                    "id: {}\nname: {}\noperations:\n  - type: click\n    pos: [{:.6}, {:.6}]",
+                                    row.point.id,
+                                    serde_json::json!(row.name.read(cx).value().to_string()),
+                                    row.position[0],
+                                    row.position[1]
                                 );
                                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                             }
@@ -512,7 +519,7 @@ impl Render for Picker {
             .gap_3()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child("Game Helper · 取点工具")
+            .child("取点工具")
             .child(
                 div()
                     .flex()

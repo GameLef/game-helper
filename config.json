@@ -12,6 +12,6 @@
       }
     ]
   },
-  "autoStartDaemon": true,
+  "autoStartDaemon": false,
   "autoReloadOnSave": true
 }

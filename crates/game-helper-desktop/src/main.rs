@@ -210,7 +210,7 @@ impl Render for NativeProbe {
             .p_4()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child("Game Helper · GPUI Kit 原生验证")
+            .child("GPUI Kit 原生验证")
             .child(Input::new(&self.input).id("probe-input"))
             .child(format!(
                 "输入变更 {} 次 · YAML {} 字",

@@ -9,7 +9,60 @@ points:
 - id: 1
   name: 点位 1
   note: ''
-  pos:
-  - 0.5
-  - 0.5
+  operations:
+  - type: click
+    pos:
+    - 0.5
+    - 0.5
+    button: left
+    clicks: 1
+  - type: key
+    key: w
+    up: false
+  - type: press
+    key: w
+    ms: 500
+  - type: wheel
+    delta: 1
+  - type: drag
+    from:
+    - 0.5
+    - 0.5
+    to:
+    - 0.5
+    - 0.5
+    duration: 200
+  - type: wait
+    ms: 100
+- id: 2
+  name: 点位 2
+  note: ''
   operations: []
+- id: 3
+  name: 点位 3
+  note: ''
+  operations:
+  - type: click
+    pos:
+    - 0.5
+    - 0.5
+    button: left
+    clicks: 1
+  - type: key
+    key: w
+    up: false
+  - type: press
+    key: w
+    ms: 500
+  - type: wheel
+    delta: 1
+  - type: drag
+    from:
+    - 0.5
+    - 0.5
+    to:
+    - 0.5
+    - 0.5
+    duration: 200
+  - type: wait
+    ms: 100

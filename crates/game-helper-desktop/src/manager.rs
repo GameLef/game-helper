@@ -10,6 +10,7 @@ use gpui_kit::component::{
     Disableable,
     button::Button,
     input::{EditorState, InputEvent, InputState},
+    select::{SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::{
     App, AppContext, Context, Entity, IntoElement, Render, SharedString, Subscription, Task, Window,
@@ -46,7 +47,7 @@ enum Action {
     Reload,
     Bind,
     AutoStart,
-    Run(usize, bool),
+    RunPoint(usize, bool),
     Picker,
     Reveal,
     Close,
@@ -57,9 +58,69 @@ struct Confirmation {
     message: String,
     choices: Vec<(&'static str, Action)>,
 }
+#[derive(Clone)]
+struct ParameterChoice {
+    label: SharedString,
+    value: serde_json::Value,
+}
+impl SelectItem for ParameterChoice {
+    type Value = serde_json::Value;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &Self::Value {
+        &self.value
+    }
+}
+fn parameter_choices(key: &str) -> Option<Vec<ParameterChoice>> {
+    let values = match key {
+        "button" => vec![
+            ("左键", serde_json::json!("left")),
+            ("右键", serde_json::json!("right")),
+            ("中键", serde_json::json!("middle")),
+        ],
+        "up" => vec![
+            ("按下", serde_json::json!(false)),
+            ("松开", serde_json::json!(true)),
+        ],
+        _ => return None,
+    };
+    Some(
+        values
+            .into_iter()
+            .map(|(label, value)| ParameterChoice {
+                label: label.into(),
+                value,
+            })
+            .collect(),
+    )
+}
+enum OperationInput {
+    Text(Entity<InputState>, bool),
+    Choice(Entity<SelectState<Vec<ParameterChoice>>>),
+}
+impl OperationInput {
+    fn value(&self, cx: &App) -> Result<serde_json::Value> {
+        match self {
+            Self::Text(input, is_text) => {
+                let text = input.read(cx).value().to_string();
+                if *is_text {
+                    Ok(serde_json::Value::String(text))
+                } else {
+                    Ok(serde_json::from_str(&text)?)
+                }
+            }
+            Self::Choice(state) => state
+                .read(cx)
+                .selected_value()
+                .cloned()
+                .context("请选择参数值"),
+        }
+    }
+}
 struct OperationFields {
     kind: OpKind,
-    fields: Vec<(String, Entity<InputState>, bool)>,
+    fields: Vec<(String, OperationInput)>,
 }
 
 pub struct Manager {
@@ -82,6 +143,7 @@ pub struct Manager {
     form_pending: bool,
     source_pending: bool,
     busy: bool,
+    opening_route: bool,
     status: SharedString,
     daemon: DaemonStatus,
     runner: Option<std::process::Child>,
@@ -107,8 +169,6 @@ impl Manager {
             "title",
             "point_name",
             "point_note",
-            "x",
-            "y",
             "hotkey",
             "start",
         ] {
@@ -121,7 +181,6 @@ impl Manager {
                 "title" => "按窗口标题匹配",
                 "point_name" => "给点位起个名称",
                 "point_note" => "记录这一步的说明",
-                "x" | "y" => "0–1",
                 "hotkey" => "例如：F9",
                 "start" => "1",
                 _ => "",
@@ -179,6 +238,7 @@ impl Manager {
             form_pending: false,
             source_pending: false,
             busy: false,
+            opening_route: false,
             status: "正在加载路线…".into(),
             daemon: DaemonStatus::default(),
             runner: None,
@@ -321,31 +381,16 @@ impl Manager {
                 let point = route.points.get_mut(index).context("选中的点位已不存在")?;
                 point.name = self.text("point_name", cx);
                 point.note = self.text("point_note", cx);
-                let x: f64 = self.text("x", cx).parse().context("X 必须是 0~1 的数字")?;
-                let y: f64 = self.text("y", cx).parse().context("Y 必须是 0~1 的数字")?;
-                ensure!(
-                    x.is_finite()
-                        && y.is_finite()
-                        && (0.0..=1.0).contains(&x)
-                        && (0.0..=1.0).contains(&y),
-                    "点位坐标必须在 0~1 范围内"
-                );
-                point.pos = [x, y];
                 point.operations = self
                     .operation_fields
                     .iter()
                     .enumerate()
                     .map(|(index, row)| {
                         let mut params = serde_json::Map::new();
-                        for (key, input, is_text) in &row.fields {
-                            let text = input.read(cx).value().to_string();
-                            let value = if *is_text {
-                                serde_json::Value::String(text)
-                            } else {
-                                serde_json::from_str(&text).with_context(|| {
-                                    format!("operations[{index}].{key}: 参数格式错误")
-                                })?
-                            };
+                        for (key, input) in &row.fields {
+                            let value = input.value(cx).with_context(|| {
+                                format!("operations[{index}].{key}: 参数格式错误")
+                            })?;
                             if key != "jitter" || value.as_f64() != Some(0.0) {
                                 params.insert(key.clone(), value);
                             }
@@ -406,6 +451,12 @@ impl Manager {
                 window,
                 cx,
             );
+            self.set(
+                "start",
+                binding.map(|b| b.start_at).unwrap_or(1).to_string(),
+                window,
+                cx,
+            );
         }
         self.sync_point(window, cx);
         self.form_pending = false;
@@ -422,36 +473,54 @@ impl Manager {
         {
             self.set("point_name", p.name.clone(), window, cx);
             self.set("point_note", p.note.clone(), window, cx);
-            self.set("x", p.pos[0].to_string(), window, cx);
-            self.set("y", p.pos[1].to_string(), window, cx);
+            let position = p.action_position();
             for op in p.operations {
-                let mut params = Operation::new(op.kind, p.pos).params;
+                let mut params = Operation::new(op.kind, position).params;
                 params.extend(op.params);
                 params
                     .entry("jitter".to_string())
                     .or_insert(serde_json::json!(0));
                 let mut fields = Vec::new();
                 for (key, value) in params {
-                    let is_text = value.is_string();
-                    let text = value
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| value.to_string());
-                    let input = cx.new(|cx| {
-                        InputState::new(window, cx)
-                            .placeholder(key.clone())
-                            .default_value(text)
-                    });
-                    self.operation_subscriptions.push(cx.subscribe(
-                        &input,
-                        |v, _, event: &InputEvent, cx| {
-                            if matches!(event, InputEvent::Change) {
-                                v.form_pending = true;
-                                cx.notify();
-                            }
-                        },
-                    ));
-                    fields.push((key, input, is_text));
+                    let input = if let Some(choices) = parameter_choices(&key) {
+                        let selected = choices
+                            .iter()
+                            .position(|choice| choice.value == value)
+                            .map(gpui_kit::component::IndexPath::new);
+                        let state = cx.new(|cx| SelectState::new(choices, selected, window, cx));
+                        self.operation_subscriptions.push(cx.subscribe(
+                            &state,
+                            |v, _, event: &SelectEvent<Vec<ParameterChoice>>, cx| {
+                                if matches!(event, SelectEvent::Confirm(Some(_))) {
+                                    v.form_pending = true;
+                                    cx.notify();
+                                }
+                            },
+                        ));
+                        OperationInput::Choice(state)
+                    } else {
+                        let is_text = value.is_string();
+                        let text = value
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_string());
+                        let input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(key.clone())
+                                .default_value(text)
+                        });
+                        self.operation_subscriptions.push(cx.subscribe(
+                            &input,
+                            |v, _, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    v.form_pending = true;
+                                    cx.notify();
+                                }
+                            },
+                        ));
+                        OperationInput::Text(input, is_text)
+                    };
+                    fields.push((key, input));
                 }
                 self.operation_fields.push(OperationFields {
                     kind: op.kind,
@@ -464,6 +533,10 @@ impl Manager {
     fn gate(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             self.status = "正在处理，请稍候".into();
+            return;
+        }
+        if matches!(&action, Action::Open(path) if self.document.as_ref().is_some_and(|doc| &doc.path == path))
+        {
             return;
         }
         if self.dirty() {
@@ -521,9 +594,6 @@ impl Manager {
             }
             Action::Cancel => {}
             Action::Discard(next) => {
-                self.form_pending = false;
-                self.source_pending = false;
-                self.document = None;
                 self.action(*next, window, cx);
             }
             Action::Close => window.remove_window(),
@@ -543,16 +613,24 @@ impl Manager {
                 );
             }
             Action::Open(path) => {
+                if self.document.as_ref().is_some_and(|doc| doc.path == path) {
+                    return Ok(());
+                }
+                self.opening_route = true;
+                self.confirmation_focus.focus(window, cx);
                 self.worker(
                     window,
                     cx,
                     move || RouteDocument::open_for_edit(path),
-                    |v, result, w, cx| match result {
-                        Ok(d) => {
-                            v.install(d, w, cx);
-                            v.status = "路线已打开".into();
+                    |v, result, w, cx| {
+                        v.opening_route = false;
+                        match result {
+                            Ok(d) => {
+                                v.install(d, w, cx);
+                                v.status = "路线已打开".into();
+                            }
+                            Err(e) => v.error(e),
                         }
-                        Err(e) => v.error(e),
                     },
                 );
             }
@@ -600,7 +678,7 @@ impl Manager {
                 doc.edit(|route| match action {
                     Action::AddPoint => {
                         let id = route.next_id();
-                        route.points.push(Point::new(id, [0.5, 0.5]));
+                        route.points.push(Point::new(id));
                         self.selected = Some(route.points.len() - 1);
                     }
                     Action::RemovePoint => {
@@ -624,7 +702,8 @@ impl Manager {
                     }
                     Action::AddOp(kind) => {
                         if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
-                            p.operations.push(Operation::new(kind, p.pos));
+                            let position = p.action_position();
+                            p.operations.push(Operation::new(kind, position));
                         }
                     }
                     Action::RemoveOp(index) => {
@@ -820,7 +899,7 @@ impl Manager {
                     },
                 );
             }
-            Action::Run(only, runner_ack) => {
+            Action::RunPoint(only, runner_ack) => {
                 self.flush(cx)?;
                 let doc = self.document.as_ref().context("请选择路线")?;
                 ensure!(!doc.dirty(), "有未保存修改，请保存后执行");
@@ -830,7 +909,10 @@ impl Manager {
                     .parse::<usize>()
                     .context("起始位置须为整数")?;
                 ensure!(
-                    start > 0 && start <= route.points.len() && only <= route.points.len(),
+                    start > 0
+                        && start <= route.points.len()
+                        && only > 0
+                        && only <= route.points.len(),
                     "起始或单点位置超出点位列表"
                 );
                 ensure!(self.runner.is_none(), "独立 runner 仍在运行，不能重复执行");
@@ -840,9 +922,9 @@ impl Manager {
                 );
                 if !self.daemon.running && !runner_ack {
                     self.confirmation = Some(Confirmation {
-                        message: "daemon 未运行。使用独立 runner 执行此路线？".into(),
+                        message: "daemon 未运行。使用独立 runner 试跑选中点？".into(),
                         choices: vec![
-                            ("使用 runner", Action::Run(only, true)),
+                            ("使用 runner", Action::RunPoint(only, true)),
                             ("取消", Action::Cancel),
                         ],
                     });
@@ -1040,6 +1122,9 @@ impl Manager {
         }
         Ok(())
     }
+    fn controls_busy(&self) -> bool {
+        self.busy && !self.opening_route
+    }
     fn button(
         &self,
         id: impl Into<gpui_kit::ElementId>,
@@ -1052,7 +1137,7 @@ impl Manager {
         Button::new(id)
             .label(label)
             .h(gpui_kit::px(32.))
-            .disabled(self.busy || disabled || self.confirmation.is_some())
+            .disabled(self.controls_busy() || disabled || self.confirmation.is_some())
             .on_click(cx.listener(move |v, _, w, cx| {
                 if matches!(
                     action,

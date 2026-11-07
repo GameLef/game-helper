@@ -6,6 +6,7 @@ use gpui_kit::component::{
     Selectable, Sizable,
     button::{ButtonCustomVariant, ButtonVariants},
     input::{Editor, Input},
+    select::Select,
 };
 use gpui_kit::{
     Div, FontWeight, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled, div, px,
@@ -57,7 +58,7 @@ fn parameter_name(key: &str) -> &str {
         "button" => "鼠标按键",
         "clicks" => "点击次数",
         "key" => "按键",
-        "up" => "松开按键 true / false",
+        "up" => "按键动作",
         "ms" => "时长（ms）",
         "delta" => "滚动量",
         "from" => "起点 [x, y]",
@@ -79,7 +80,7 @@ impl Manager {
                 Input::new(&self.fields[key])
                     .accessibility_id(key)
                     .aria_label(label)
-                    .disabled(self.busy || self.confirmation.is_some())
+                    .disabled(self.controls_busy() || self.confirmation.is_some())
                     .w_full(),
             )
     }
@@ -178,7 +179,7 @@ impl Manager {
             )
             .child(
                 Input::new(&self.search)
-                    .disabled(self.busy || self.confirmation.is_some())
+                    .disabled(self.controls_busy() || self.confirmation.is_some())
                     .w_full(),
             )
             .child(
@@ -486,12 +487,7 @@ impl Manager {
                                         .whitespace_nowrap()
                                         .child(name),
                                 )
-                                .child(muted(format!("{} 个动作", point.operations.len())))
-                                .child(
-                                    muted(format!("{:.3}, {:.3}", point.pos[0], point.pos[1]))
-                                        .font_family("Cascadia Mono")
-                                        .text_size(px(11.)),
-                                ),
+                                .child(muted(format!("{} 个动作", point.operations.len()))),
                         ),
                     ),
             );
@@ -581,7 +577,30 @@ impl Manager {
         cx: &Context<Self>,
     ) -> Div {
         let mut fields = row().items_start().flex_wrap().gap_3();
-        for (key, input, _) in &operation.fields {
+        for (key, input) in &operation.fields {
+            let id = format!("operation-{index}-{key}");
+            let label = format!("动作 {} {}", index + 1, parameter_name(key));
+            let control = match input {
+                OperationInput::Text(input, _) => Input::new(input)
+                    .accessibility_id(id)
+                    .aria_label(label)
+                    .disabled(self.controls_busy() || self.confirmation.is_some())
+                    .w_full()
+                    .into_any_element(),
+                OperationInput::Choice(state) => div()
+                    .id(format!("operation-choice-{index}-{key}"))
+                    .role(gpui_kit::Role::Group)
+                    .accessibility_id(id.clone())
+                    .w_full()
+                    .child(
+                        Select::new(state)
+                            .id(id)
+                            .accessibility_label(label)
+                            .disabled(self.controls_busy() || self.confirmation.is_some())
+                            .w_full(),
+                    )
+                    .into_any_element(),
+            };
             fields = fields.child(
                 column()
                     .gap_1()
@@ -589,13 +608,7 @@ impl Manager {
                     .min_w(px(150.))
                     .max_w(px(340.))
                     .child(muted(parameter_name(key).to_owned()))
-                    .child(
-                        Input::new(input)
-                            .accessibility_id(format!("operation-{index}-{key}"))
-                            .aria_label(format!("动作 {} {}", index + 1, parameter_name(key)))
-                            .disabled(self.busy || self.confirmation.is_some())
-                            .w_full(),
-                    ),
+                    .child(control),
             );
         }
         column()
@@ -675,18 +688,10 @@ impl Manager {
                 .child(
                     row()
                         .justify_between()
-                        .child(heading(format!("编辑第 {} 点", index + 1)))
-                        .child(muted("坐标范围 0–1")),
+                        .child(heading(format!("编辑第 {} 点", index + 1))),
                 )
                 .child(self.field("point_name", "点位名称"))
                 .child(self.field("point_note", "点位备注"))
-                .child(
-                    row()
-                        .flex_wrap()
-                        .gap_3()
-                        .child(self.field("x", "归一化 X"))
-                        .child(self.field("y", "归一化 Y")),
-                )
                 .child(
                     column()
                         .gap_2()
@@ -727,7 +732,7 @@ impl Manager {
         } else {
             inspector = inspector.child(empty(
                 "选择一个点位",
-                "在左侧新增或选择点位，在这里编辑坐标与动作。",
+                "在左侧新增或选择点位，在这里编辑名称、备注与动作。",
             ));
         }
         div()
@@ -750,7 +755,7 @@ impl Manager {
                 .child(
                     Editor::new(&self.source)
                         .aria_label("路线 YAML 源码")
-                        .disabled(self.busy || self.confirmation.is_some())
+                        .disabled(self.controls_busy() || self.confirmation.is_some())
                         .size_full(),
                 )
                 .into_any_element()
@@ -809,19 +814,7 @@ impl Manager {
                             .ghost()
                             .small(),
                     )
-                    .child(
-                        row()
-                            .flex_1()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .font_family("Bahnschrift")
-                                    .text_size(px(22.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Game Helper"),
-                            )
-                            .child(div().text_color(color(MUTED)).child("路线工作台")),
-                    )
+                    .child(div().flex_1())
                     .child(
                         row()
                             .gap_2()
@@ -973,18 +966,18 @@ impl Manager {
                                 Input::new(&self.fields["start"])
                                     .accessibility_id("start")
                                     .aria_label("起始点")
-                                    .disabled(!has_doc || self.busy || self.confirmation.is_some()),
+                                    .disabled(
+                                        !has_doc
+                                            || self.controls_busy()
+                                            || self.confirmation.is_some(),
+                                    ),
                             ),
                         ),
-                    )
-                    .child(
-                        self.button("run", "执行路线", Action::Run(0, false), disabled, cx)
-                            .primary(),
                     )
                     .child(self.button(
                         "only",
                         "试跑选中点",
-                        Action::Run(self.selected.map(|i| i + 1).unwrap_or(0), false),
+                        Action::RunPoint(self.selected.map(|i| i + 1).unwrap_or(0), false),
                         disabled || self.selected.is_none(),
                         cx,
                     ))
@@ -995,7 +988,11 @@ impl Manager {
                                 Input::new(&self.fields["hotkey"])
                                     .accessibility_id("hotkey")
                                     .aria_label("路线热键")
-                                    .disabled(!has_doc || self.busy || self.confirmation.is_some()),
+                                    .disabled(
+                                        !has_doc
+                                            || self.controls_busy()
+                                            || self.confirmation.is_some(),
+                                    ),
                             ),
                         ),
                     )
@@ -1037,7 +1034,7 @@ impl Manager {
             let action = action.clone();
             let mut button = Button::new(("confirm", i))
                 .label(*label)
-                .disabled(self.busy)
+                .disabled(self.controls_busy())
                 .on_click(cx.listener(move |v, _, w, cx| v.action(action.clone(), w, cx)));
             if *label == "取消" {
                 button = button.ghost().track_focus(&self.confirmation_focus);
@@ -1118,23 +1115,55 @@ impl Manager {
                     .id("manager-status")
                     .role(gpui_kit::Role::Status)
                     .accessibility_id("manager-status")
-                    .aria_label(self.status.clone())
+                    .aria_label(if self.controls_busy() {
+                        "正在处理…".into()
+                    } else {
+                        self.status.clone()
+                    })
                     .px_4()
                     .py_2()
                     .text_size(px(12.))
                     .bg(color(if self.status_is_error { 0xF9EBEE } else { FOG }))
                     .text_color(color(if self.status_is_error { RED } else { MUTED }))
-                    .child(if self.busy {
+                    .child(if self.controls_busy() {
                         "正在处理…".into()
                     } else {
                         self.status.clone()
                     }),
             );
+        if self.opening_route {
+            root = root.child(
+                div()
+                    .id("route-loading-shield")
+                    .role(gpui_kit::Role::Status)
+                    .accessibility_id("route-loading-shield")
+                    .aria_label("正在切换路线")
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        muted("正在切换路线…")
+                            .px_4()
+                            .py_2()
+                            .bg(color(PAPER))
+                            .border_1()
+                            .border_color(color(LINE))
+                            .rounded(px(6.)),
+                    ),
+            );
+        }
         if self.confirmation.is_some() {
             root = root.child(gpui_kit::deferred(self.confirmation_dialog(cx)).with_priority(2));
         }
         root.id("manager-root").on_key_down(cx.listener(
             |v, event: &gpui_kit::KeyDownEvent, w, cx| {
+                if v.opening_route {
+                    cx.stop_propagation();
+                    return;
+                }
                 if v.confirmation.is_some() && event.keystroke.key == "escape" {
                     v.action(Action::Cancel, w, cx);
                     cx.stop_propagation();

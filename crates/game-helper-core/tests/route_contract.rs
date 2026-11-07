@@ -1,4 +1,4 @@
-use game_helper_core::route::{OpKind, Route};
+use game_helper_core::route::{OpKind, Operation, Point, Route};
 use serde_json::{Value, json};
 
 const VALID: &str = r#"
@@ -37,7 +37,7 @@ fn load_valid() {
     let route = Route::parse(VALID).unwrap();
     assert_eq!(route.name, "测试路线");
     assert_eq!(route.points.len(), 2);
-    assert_eq!(route.points[0].pos, [0.5, 0.5]);
+    assert_eq!(route.points[0].action_position(), [0.9, 0.9]);
     assert_eq!(route.points[0].operations.len(), 6);
     assert_eq!(route.points[0].operations[0].kind, OpKind::Click);
 }
@@ -64,7 +64,10 @@ fn empty_target() {
 }
 #[test]
 fn position_outside() {
-    rejected(|v| v["points"][0]["pos"] = json!([1.5, 0.5]), "points[0]");
+    rejected(
+        |v| v["points"][0]["operations"][0]["pos"] = json!([1.5, 0.5]),
+        "points[0]",
+    );
 }
 #[test]
 fn unknown_operation() {
@@ -87,12 +90,17 @@ fn missing_press_ms() {
 }
 #[test]
 fn second_point_location() {
-    rejected(|v| v["points"][1]["pos"] = json!([-0.1, 0.9]), "points[1]");
+    rejected(
+        |v| v["points"][1]["operations"] = json!([{"type":"click", "pos":[-0.1,0.9]}]),
+        "points[1]",
+    );
 }
 #[test]
 fn structured_edit_reports_per_point_location() {
     let mut route = Route::parse(VALID).unwrap();
-    route.points[1].pos = [1.5, 0.9];
+    route.points[1]
+        .operations
+        .push(Operation::new(OpKind::Click, [1.5, 0.9]));
     let error = route.validate().unwrap_err().to_string();
     assert!(
         error.contains("points[1]") && error.contains("#2"),
@@ -123,8 +131,11 @@ fn empty_points_allowed() {
 #[test]
 fn boundary_coordinates() {
     let mut raw = raw();
-    raw["points"][1]["pos"] = json!([0.0, 1.0]);
-    assert_eq!(Route::from_value(&raw).unwrap().points[1].pos, [0.0, 1.0]);
+    raw["points"][0]["operations"][0]["pos"] = json!([0.0, 1.0]);
+    assert_eq!(
+        Route::from_value(&raw).unwrap().points[0].action_position(),
+        [0.0, 1.0]
+    );
 }
 #[test]
 fn wait_zero_rejected() {
@@ -140,7 +151,10 @@ fn wheel_zero_rejected() {
 #[test]
 fn booleans_cannot_be_numbers() {
     rejected(|v| v["points"][0]["id"] = json!(true), "id");
-    rejected(|v| v["points"][0]["pos"] = json!([true, 0.5]), "pos");
+    rejected(
+        |v| v["points"][0]["operations"][0]["pos"] = json!([true, 0.5]),
+        "pos",
+    );
     rejected(
         |v| v["points"][0]["operations"][0]["jitter"] = json!(true),
         "jitter",
@@ -197,13 +211,70 @@ fn omitted_click_and_drag_defaults_and_zero_jitter() {
     assert_eq!(cache["points"][0]["operations"][4]["duration"], 200);
 }
 #[test]
-fn anchor_six_decimal_and_chinese_cache() {
+fn spatial_actions_and_chinese_cache_survive_without_point_coordinates() {
     let mut route = Route::parse(VALID).unwrap();
-    route.points[0].pos = [0.123456789, 0.876543219];
+    route.points[0].operations[0]
+        .params
+        .insert("pos".into(), json!([0.123456789, 0.876543219]));
     let json = route.cache_json().unwrap();
     assert!(json.contains("测试路线") && !json.contains("\\u6d4b"));
     let value: Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["points"][0]["pos"], json!([0.123457, 0.876543]));
+    assert!(
+        value["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p.get("pos").is_none())
+    );
+    assert_eq!(
+        value["points"][0]["operations"][0]["pos"],
+        json!([0.123456789, 0.876543219])
+    );
+    assert_eq!(
+        value["points"][0]["operations"][4]["from"],
+        json!([0.1, 0.1])
+    );
+    assert_eq!(value["points"][0]["operations"][4]["to"], json!([0.2, 0.2]));
+}
+#[test]
+fn legacy_point_coordinates_are_optional_ignored_and_not_generated() {
+    let legacy = Route::parse(VALID).unwrap();
+    let mut without = raw();
+    for point in without["points"].as_array_mut().unwrap() {
+        point.as_object_mut().unwrap().remove("pos");
+    }
+    assert_eq!(Route::from_value(&without).unwrap(), legacy);
+    // Obsolete point metadata must not affect action validation or execution.
+    without["points"][0]["pos"] = json!("obsolete");
+    assert_eq!(Route::from_value(&without).unwrap(), legacy);
+    let yaml: Value = yaml_serde::from_str(&legacy.yaml().unwrap()).unwrap();
+    assert!(
+        yaml["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p.get("pos").is_none())
+    );
+    assert_eq!(Route::from_value(&yaml).unwrap(), legacy);
+    let decoded: Route = serde_json::from_str(&legacy.cache_json().unwrap()).unwrap();
+    assert_eq!(decoded, legacy);
+}
+#[test]
+fn new_actions_use_existing_spatial_coordinates_or_window_center() {
+    let mut point = Point::new(1);
+    assert_eq!(point.action_position(), [0.5, 0.5]);
+    point
+        .operations
+        .push(Operation::new(OpKind::Wait, [0.0, 0.0]));
+    point
+        .operations
+        .push(Operation::new(OpKind::Drag, [0.2, 0.3]));
+    point
+        .operations
+        .push(Operation::new(OpKind::Click, [0.8, 0.9]));
+    assert_eq!(point.action_position(), [0.2, 0.3]);
+    point.operations.remove(1);
+    assert_eq!(point.action_position(), [0.8, 0.9]);
 }
 #[test]
 fn malformed_structures_rejected_and_list_order_retained() {

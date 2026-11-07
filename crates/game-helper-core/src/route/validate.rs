@@ -31,7 +31,7 @@ pub(super) fn route(raw: &Value) -> Result<Route> {
                 .as_u64()
                 .filter(|n| *n > 0)
                 .with_context(|| format!("{location}: id 必须是正整数"))?;
-            let pos = pair(&point["pos"], &format!("{location}.pos"))?;
+            // Legacy point-level pos is ignored; only operation coordinates execute.
             let operations = match point.get("operations") {
                 None | Some(Value::Null) => Vec::new(),
                 Some(value) => value
@@ -44,7 +44,6 @@ pub(super) fn route(raw: &Value) -> Result<Route> {
             };
             Ok(Point {
                 id,
-                pos,
                 name: text(&point["name"]),
                 note: text(&point["note"]),
                 operations,
