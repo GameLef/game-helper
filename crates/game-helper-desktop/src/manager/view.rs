@@ -576,52 +576,32 @@ impl Manager {
         operation: &OperationFields,
         cx: &Context<Self>,
     ) -> Div {
-        let mut fields = row().items_start().flex_wrap().gap_3();
-        for (key, input) in &operation.fields {
-            let id = format!("operation-{index}-{key}");
-            let label = format!("动作 {} {}", index + 1, parameter_name(key));
-            let control = match input {
-                OperationInput::Text(input, _) => Input::new(input)
-                    .accessibility_id(id)
-                    .aria_label(label)
-                    .disabled(self.controls_busy() || self.confirmation.is_some())
-                    .w_full()
-                    .into_any_element(),
-                OperationInput::Choice(state) => div()
-                    .id(format!("operation-choice-{index}-{key}"))
-                    .role(gpui_kit::Role::Group)
-                    .accessibility_id(id.clone())
-                    .w_full()
-                    .child(
-                        Select::new(state)
-                            .id(id)
-                            .accessibility_label(label)
-                            .disabled(self.controls_busy() || self.confirmation.is_some())
-                            .w_full(),
-                    )
-                    .into_any_element(),
-            };
-            fields = fields.child(
-                column()
-                    .gap_1()
-                    .flex_1()
-                    .min_w(px(150.))
-                    .max_w(px(340.))
-                    .child(muted(parameter_name(key).to_owned()))
-                    .child(control),
-            );
-        }
-        column()
+        let name = operation.name.read(cx).value().to_string();
+        let title = if name.trim().is_empty() {
+            op_name(operation.kind).to_owned()
+        } else {
+            name
+        };
+        let tooltip = format!(
+            "动作 {}：{}（{}）",
+            index + 1,
+            title,
+            op_name(operation.kind)
+        );
+        let mut panel = column()
             .gap_3()
-            .py_4()
-            .border_t_1()
+            .py_3()
+            .flex_shrink_0()
+            .border_b_1()
             .border_color(color(LINE))
             .child(
                 row()
                     .flex_wrap()
-                    .justify_between()
+                    .gap_2()
                     .child(
                         row()
+                            .flex_1()
+                            .min_w(px(150.))
                             .gap_3()
                             .child(
                                 div()
@@ -631,14 +611,64 @@ impl Manager {
                                     .child(format!("{:02}", index + 1)),
                             )
                             .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(op_name(operation.kind)),
+                                column()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .id(format!("operation-summary-{index}"))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .whitespace_nowrap()
+                                            .tooltip(move |w, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    tooltip.clone(),
+                                                )
+                                                .build(w, cx)
+                                            })
+                                            .child(title),
+                                    )
+                                    .child(muted(op_name(operation.kind))),
                             ),
                     )
                     .child(
                         row()
                             .gap_1()
+                            .flex_wrap()
+                            .child(
+                                div()
+                                    .id(format!("operation-expansion-{index}"))
+                                    .role(gpui_kit::Role::Group)
+                                    .aria_label(format!("动作 {} 参数", index + 1))
+                                    .aria_expanded(operation.expanded)
+                                    .child(
+                                        self.button(
+                                            ("op-toggle", index),
+                                            if operation.expanded {
+                                                "收起"
+                                            } else {
+                                                "展开"
+                                            },
+                                            Action::ToggleOp(index),
+                                            false,
+                                            cx,
+                                        )
+                                        .accessibility_id(format!("operation-toggle-{index}"))
+                                        .accessibility_label(format!(
+                                            "{}动作 {}",
+                                            if operation.expanded {
+                                                "收起"
+                                            } else {
+                                                "展开"
+                                            },
+                                            index + 1
+                                        ))
+                                        .track_focus(&operation.toggle_focus)
+                                        .ghost()
+                                        .small(),
+                                    ),
+                            )
                             .child(
                                 self.button(
                                     ("op-up", index),
@@ -677,70 +707,211 @@ impl Manager {
                                 .accessibility_label(format!("删除动作 {}", index + 1)),
                             ),
                     ),
-            )
-            .child(fields)
+            );
+        if operation.expanded {
+            panel = panel.child(
+                column().gap_1().child(muted("动作名称（可选）")).child(
+                    Input::new(&operation.name)
+                        .accessibility_id(format!("operation-{index}-name"))
+                        .aria_label(format!("动作 {} 名称", index + 1))
+                        .disabled(self.controls_busy() || self.confirmation.is_some())
+                        .w_full(),
+                ),
+            );
+            let mut fields = row().items_start().flex_wrap().gap_3();
+            for (key, input) in &operation.fields {
+                let id = format!("operation-{index}-{key}");
+                let label = format!("动作 {} {}", index + 1, parameter_name(key));
+                let control = match input {
+                    OperationInput::Text(input, _) => Input::new(input)
+                        .accessibility_id(id)
+                        .aria_label(label)
+                        .disabled(self.controls_busy() || self.confirmation.is_some())
+                        .w_full()
+                        .into_any_element(),
+                    OperationInput::Choice(state) => div()
+                        .id(format!("operation-choice-{index}-{key}"))
+                        .role(gpui_kit::Role::Group)
+                        .accessibility_id(id.clone())
+                        .w_full()
+                        .child(
+                            Select::new(state)
+                                .id(id)
+                                .accessibility_label(label)
+                                .disabled(self.controls_busy() || self.confirmation.is_some())
+                                .w_full(),
+                        )
+                        .into_any_element(),
+                };
+                fields = fields.child(
+                    column()
+                        .gap_1()
+                        .flex_1()
+                        .min_w(px(150.))
+                        .max_w(px(340.))
+                        .child(muted(parameter_name(key).to_owned()))
+                        .child(control),
+                );
+            }
+            panel = panel.child(fields);
+        }
+        panel
     }
 
     fn point_inspector(&self, cx: &Context<Self>) -> impl IntoElement {
-        let mut inspector = column().gap_4().p_5();
-        if let Some(index) = self.selected {
-            inspector = inspector
-                .child(
-                    row()
-                        .justify_between()
-                        .child(heading(format!("编辑第 {} 点", index + 1))),
-                )
-                .child(self.field("point_name", "点位名称"))
-                .child(self.field("point_note", "点位备注"))
-                .child(
-                    column()
-                        .gap_2()
-                        .pt_3()
-                        .child(
-                            row()
-                                .justify_between()
-                                .child(heading("动作编排"))
-                                .child(muted(format!("{} 个动作", self.operation_fields.len()))),
-                        )
-                        .child(muted("按下列顺序执行；时间单位为毫秒。")),
-                );
-            let mut add = row().flex_wrap().gap_1();
-            for (i, kind) in OpKind::ALL.into_iter().enumerate() {
-                add = add.child(
-                    self.button(
-                        ("op", i),
-                        format!("+ {}", op_name(kind)),
-                        Action::AddOp(kind),
-                        false,
-                        cx,
-                    )
-                    .small()
-                    .ghost(),
-                );
-            }
-            inspector = inspector.child(add);
-            if self.operation_fields.is_empty() {
-                inspector = inspector.child(
-                    empty("暂无动作", "选择上方动作，为这个点位添加第一步操作。")
-                        .bg(color(FOG))
-                        .rounded(px(6.)),
-                );
-            }
-            for (i, op) in self.operation_fields.iter().enumerate() {
-                inspector = inspector.child(self.operation_panel(i, op, cx));
-            }
-        } else {
-            inspector = inspector.child(empty(
+        let Some(index) = self.selected else {
+            return column().size_full().bg(color(PAPER)).child(empty(
                 "选择一个点位",
                 "在左侧新增或选择点位，在这里编辑名称、备注与动作。",
             ));
+        };
+        let point_name = self.text("point_name", cx);
+        let title = if point_name.trim().is_empty() {
+            format!("第 {} 点", index + 1)
+        } else {
+            point_name
+        };
+        let title_tooltip = title.clone();
+        let any_expanded = self.operation_fields.iter().any(|op| op.expanded);
+        let mut add = row().flex_wrap().gap_1();
+        for (i, kind) in OpKind::ALL.into_iter().enumerate() {
+            add = add.child(
+                self.button(
+                    ("op", i),
+                    format!("+ {}", op_name(kind)),
+                    Action::AddOp(kind),
+                    false,
+                    cx,
+                )
+                .accessibility_id(format!("operation-add-{}", kind.label()))
+                .small()
+                .ghost(),
+            );
         }
-        div()
-            .id("point-editor")
-            .size_full()
+        let toolbar = column()
+            .gap_1()
+            .px_4()
+            .py_2()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(color(LINE))
+            .child(
+                row()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        row()
+                            .flex_1()
+                            .min_w(px(110.))
+                            .gap_2()
+                            .child(
+                                div()
+                                    .id("point-context-name")
+                                    .flex_1()
+                                    .min_w_0()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .tooltip(move |w, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(
+                                            title_tooltip.clone(),
+                                        )
+                                        .build(w, cx)
+                                    })
+                                    .child(title),
+                            )
+                            .child(
+                                muted(format!("{} 个动作", self.operation_fields.len()))
+                                    .flex_shrink_0(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("point-info-expansion")
+                            .role(gpui_kit::Role::Group)
+                            .aria_label("点位基础信息")
+                            .aria_expanded(self.point_info_open)
+                            .child(
+                                self.button(
+                                    "point-info-toggle",
+                                    "点位信息",
+                                    Action::TogglePointInfo,
+                                    false,
+                                    cx,
+                                )
+                                .accessibility_id("point-info-toggle")
+                                .track_focus(&self.point_info_focus)
+                                .toggled(self.point_info_open)
+                                .small()
+                                .ghost(),
+                            ),
+                    )
+                    .child(
+                        self.button(
+                            "operation-toggle-all",
+                            if any_expanded {
+                                "全部收起"
+                            } else {
+                                "全部展开"
+                            },
+                            Action::ToggleAllOps,
+                            self.operation_fields.is_empty(),
+                            cx,
+                        )
+                        .accessibility_id("operation-toggle-all")
+                        .track_focus(&self.all_ops_focus)
+                        .small()
+                        .ghost(),
+                    ),
+            )
+            .child(add);
+        let mut list = column()
+            .id("operation-list")
+            .accessibility_id("operation-list")
+            .role(gpui_kit::Role::Group)
+            .aria_label("动作编排列表")
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.operation_scroll)
+            .px_4()
+            .pb_4();
+        if self.point_info_open {
+            list = list.child(
+                column()
+                    .gap_3()
+                    .py_3()
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(color(LINE))
+                    .child(self.field("point_name", "点位名称"))
+                    .child(self.field("point_note", "点位备注")),
+            );
+        }
+        if self.operation_fields.is_empty() {
+            list = list.child(empty(
+                "暂无动作",
+                "使用上方按钮添加动作；动作按列表顺序执行，时间单位为毫秒。",
+            ));
+        }
+        for (i, op) in self.operation_fields.iter().enumerate() {
+            list = list.child(self.operation_panel(i, op, cx));
+        }
+        column()
+            .size_full()
+            .min_h_0()
             .bg(color(PAPER))
-            .child(inspector)
+            .child(
+                div()
+                    .id("operation-toolbar")
+                    .accessibility_id("operation-toolbar")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("动作编排工具栏")
+                    .flex_shrink_0()
+                    .child(toolbar),
+            )
+            .child(list)
     }
 
     fn document_workspace(&self, cx: &Context<Self>) -> Div {

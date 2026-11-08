@@ -1,0 +1,448 @@
+#requires -Version 7.0
+param(
+    [string]$ProjectRoot = (Split-Path $PSScriptRoot -Parent),
+    [string]$Executable = 'target\debug\game-helper.exe',
+    [switch]$CaptureScreenshots
+)
+# Owns one native manager and a unique data root. Never starts a daemon or playback.
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class ManagerActionsNative {
+ [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left,Top,Right,Bottom; }
+ [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
+ [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+ [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr window,out Rect rect);
+ [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window,out Rect rect);
+ [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr window,int x,int y,int width,int height,bool repaint);
+ [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra);
+}
+'@
+[ManagerActionsNative]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
+$ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
+$exe = if ([IO.Path]::IsPathRooted($Executable)) { $Executable } else { Join-Path $ProjectRoot $Executable }
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Build the native executable first: $exe" }
+$appRoot = Join-Path $ProjectRoot ('.tools\manager-actions-' + [guid]::NewGuid().ToString('N'))
+$routes = Join-Path $appRoot 'routes'
+[IO.Directory]::CreateDirectory($routes) | Out-Null
+[IO.Directory]::CreateDirectory((Join-Path $appRoot 'ahk')) | Out-Null
+$utf8 = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText((Join-Path $appRoot 'ahk\daemon.ahk'), '; Inert action smoke fixture. Never executed.', $utf8)
+[IO.File]::WriteAllText((Join-Path $appRoot 'config.json'), '{"routesDir":"routes","autoStartDaemon":false,"autoReloadOnSave":false,"hotkeys":{"stopAll":"F12","bindings":[]}}', $utf8)
+$kinds = @('click', 'key', 'press', 'wheel', 'drag', 'wait')
+$expected = [Collections.Generic.List[object]]::new()
+for ($i = 0; $i -lt 36; $i++) {
+    $kind = $kinds[$i % $kinds.Count]
+    $operation = [ordered]@{ type = $kind; name = "预置动作 $($i + 1) $kind" }
+    switch ($kind) {
+        'click' { $operation.pos = @(0.123456789, 0.876543219); $operation.button = 'right'; $operation.clicks = 2 }
+        'key' { $operation.key = 'm'; $operation.up = $true }
+        'press' { $operation.key = 'w'; $operation.ms = 800 }
+        'wheel' { $operation.delta = -5 }
+        'drag' { $operation.from = @(0.1, 0.1); $operation.to = @(0.2, 0.2); $operation.duration = 150 }
+        'wait' { $operation.ms = 100 }
+    }
+    $expected.Add([pscustomobject]$operation)
+}
+$fixture = [ordered]@{
+    format = 'route/v1'; name = 'Actions'; note = 'Isolated native action acceptance'
+    target = @{ process = 'never-playback.exe' }
+    points = @(
+        @{ id = 42; name = '需要滚动查看的长动作序列'; note = '这段点位信息应随列表滚出视区，而添加工具栏应始终可见'; operations = $expected.ToArray() },
+        @{ id = 7; name = '空点位'; note = ''; operations = @() }
+    )
+}
+# JSON is a YAML subset, so this also exercises loading a noncanonical source.
+$routePath = Join-Path $routes 'Actions.yaml'
+[IO.File]::WriteAllText($routePath, ($fixture | ConvertTo-Json -Depth 12), $utf8)
+$fixture.name = 'Other'
+[IO.File]::WriteAllText((Join-Path $routes 'Other.yaml'), ($fixture | ConvertTo-Json -Depth 12), $utf8)
+$originalSource = [IO.File]::ReadAllText($routePath)
+$manager = $null
+$root = $null
+$scope = [Windows.Automation.TreeScope]::Descendants
+$owned = [Collections.Generic.List[Diagnostics.Process]]::new()
+
+function Wait-Until([string]$Description, [scriptblock]$Predicate, [int]$TimeoutMs = 8000) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        if (& $Predicate) { return }
+        Start-Sleep -Milliseconds 75
+    } while ($watch.ElapsedMilliseconds -lt $TimeoutMs)
+    throw "Timed out: $Description"
+}
+function Node([string]$Id) {
+    $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::AutomationIdProperty, $Id))
+}
+function Named([string]$Name) {
+    $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, $Name))
+}
+function Need-Node([string]$Id) {
+    Wait-Until "control $Id" { $null -ne (Node $Id) }
+    Node $Id
+}
+function Invoke-Node($Control) {
+    if ($null -eq $Control) { throw 'Missing action control' }
+    if (-not $Control.Current.IsEnabled) { throw ('Disabled action control: ' + $Control.Current.Name) }
+    $patterns = @($Control.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+    if ($patterns -contains 'InvokePatternIdentifiers.Pattern') {
+        $Control.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+    } elseif ($patterns -contains 'ExpandCollapsePatternIdentifiers.Pattern') {
+        $pattern = $Control.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern)
+        if ($pattern.Current.ExpandCollapseState -eq [Windows.Automation.ExpandCollapseState]::Collapsed) { $pattern.Expand() } else { $pattern.Collapse() }
+    } elseif ($patterns -contains 'TogglePatternIdentifiers.Pattern') {
+        $Control.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Toggle()
+    } elseif ($patterns -contains 'SelectionItemPatternIdentifiers.Pattern') {
+        $Control.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    } else { throw ('Unsupported action control: ' + $Control.Current.Name + ' [' + $Control.Current.AutomationId + ']; type=' + $Control.Current.ControlType.ProgrammaticName + '; patterns=' + ($patterns -join ', ')) }
+    Start-Sleep -Milliseconds 125
+}
+function Invoke-Id([string]$Id) { Invoke-Node (Need-Node $Id) }
+function Invoke-Name([string]$Name) { Invoke-Node (Named $Name) }
+function Input-Value([string]$Id) {
+    (Need-Node $Id).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
+}
+function Set-Input([string]$Id, [string]$Text) {
+    (Need-Node $Id).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($Text)
+    Start-Sleep -Milliseconds 100
+}
+function Wait-Ready {
+    Wait-Until 'manager ready' {
+        $status = Node 'manager-status'
+        $add = Node 'operation-add-click'
+        $null -ne $status -and $status.Current.Name -notmatch '正在加载|正在处理' -and $null -eq (Node 'route-loading-shield') -and $null -ne (Node 'operation-toolbar') -and $null -ne $add -and $add.Current.IsEnabled
+    }
+}
+function Open-Route([string]$Stem) {
+    Wait-Until "enabled route $Stem" { $route = Node ('route-' + $Stem); $null -ne $route -and $route.Current.IsEnabled }
+    Invoke-Id ('route-' + $Stem)
+    if ($null -ne (Node 'confirmation-dialog')) { throw "Unexpected unsaved confirmation while opening $Stem" }
+    Wait-Ready
+    Wait-Until "first action visible immediately after opening $Stem" {
+        $bounds = (Need-Node 'operation-list').Current.BoundingRectangle
+        (In-Bounds 'operation-toggle-0' $bounds) -and (In-Bounds 'operation-0-name' $bounds)
+    }
+}
+function Start-Manager {
+    $script:manager = Start-Process -FilePath $exe -ArgumentList @('--app-root', ('"' + $appRoot + '"')) -PassThru
+    $owned.Add($manager)
+    Wait-Until 'native manager and enabled route library' {
+        $manager.Refresh()
+        if ($manager.HasExited) { throw 'Owned manager exited before opening its window' }
+        if ($manager.MainWindowHandle -eq [IntPtr]::Zero) { return $false }
+        try {
+            $candidate = [Windows.Automation.AutomationElement]::FromHandle($manager.MainWindowHandle)
+            if ($candidate.Current.Name -ne '路线管理') { return $false }
+            $script:root = $candidate
+            $status = Node 'manager-status'
+            $route = Node 'route-Actions'
+            $null -ne $status -and $null -ne $route -and $route.Current.IsEnabled -and $status.Current.Name -notmatch '正在加载|正在处理'
+        } catch { $false }
+    } 15000
+    [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+    Open-Route 'Actions'
+}
+function Resize-Manager([int]$Width, [int]$Height) {
+    $scale = [ManagerActionsNative]::GetDpiForWindow($manager.MainWindowHandle) / 96.0
+    $client = [ManagerActionsNative+Rect]::new()
+    $outer = [ManagerActionsNative+Rect]::new()
+    if (-not [ManagerActionsNative]::GetClientRect($manager.MainWindowHandle, [ref]$client) -or -not [ManagerActionsNative]::GetWindowRect($manager.MainWindowHandle, [ref]$outer)) { throw 'Cannot read owned manager bounds' }
+    $frameWidth = ($outer.Right - $outer.Left) - ($client.Right - $client.Left)
+    $frameHeight = ($outer.Bottom - $outer.Top) - ($client.Bottom - $client.Top)
+    if (-not [ManagerActionsNative]::MoveWindow($manager.MainWindowHandle, 30, 30, ([int][Math]::Round($Width * $scale) + $frameWidth), ([int][Math]::Round($Height * $scale) + $frameHeight), $true)) { throw 'Cannot resize owned manager' }
+    Start-Sleep -Milliseconds 300
+    $actual = [ManagerActionsNative+Rect]::new()
+    [ManagerActionsNative]::GetClientRect($manager.MainWindowHandle, [ref]$actual) | Out-Null
+    if ([Math]::Abs(($actual.Right - $actual.Left) / $scale - $Width) -gt 1 -or [Math]::Abs(($actual.Bottom - $actual.Top) / $scale - $Height) -gt 1) { throw "Client size did not reach ${Width}x${Height}" }
+}
+function In-Bounds([string]$Id, $Bounds) {
+    $control = Node $Id
+    if ($null -eq $control -or $control.Current.IsOffscreen) { return $false }
+    $rect = $control.Current.BoundingRectangle
+    -not $rect.IsEmpty -and $rect.Width -gt 0 -and $rect.Height -gt 0 -and $rect.Left -ge ($Bounds.Left - 1) -and $rect.Right -le ($Bounds.Right + 1) -and $rect.Top -ge ($Bounds.Top - 1) -and $rect.Bottom -le ($Bounds.Bottom + 1)
+}
+function Assert-InList([string]$Id) {
+    $bounds = (Need-Node 'operation-list').Current.BoundingRectangle
+    if (-not (In-Bounds $Id $bounds)) { throw "Action control outside scrolling viewport: $Id; viewport=$bounds; control=$((Need-Node $Id).Current.BoundingRectangle)" }
+}
+function Assert-Toolbar {
+    $windowBounds = $root.Current.BoundingRectangle
+    $toolbar = (Need-Node 'operation-toolbar').Current.BoundingRectangle
+    foreach ($id in @('operation-toolbar', 'operation-toggle-all', 'point-info-toggle') + @($kinds | ForEach-Object { 'operation-add-' + $_ })) {
+        if (-not (In-Bounds $id $windowBounds)) { throw "Fixed action control outside window: $id" }
+        if ($id -ne 'operation-toolbar' -and -not (In-Bounds $id $toolbar)) { throw "Action control clipped by toolbar: $id" }
+    }
+    $list = (Need-Node 'operation-list').Current.BoundingRectangle
+    if ($list.Top -lt ($toolbar.Bottom - 1) -or $list.Height -lt 80) { throw "Toolbar obscures action viewport or leaves insufficient list space: $toolbar; $list" }
+}
+function Record-Layout([string]$Label, [bool]$RequireListShare = $true) {
+    $toolbar = (Need-Node 'operation-toolbar').Current.BoundingRectangle
+    $list = (Need-Node 'operation-list').Current.BoundingRectangle
+    $inspectorHeight = $list.Bottom - $toolbar.Top
+    $share = $list.Height / $inspectorHeight
+    Write-Output ('Layout {0}: toolbar={1:F0}x{2:F0}px; list={3:F0}x{4:F0}px; inspectorHeight={5:F0}px; listShare={6:P1}' -f $Label, $toolbar.Width, $toolbar.Height, $list.Width, $list.Height, $inspectorHeight, $share)
+    if ($RequireListShare -and $share -lt 0.60) { throw "Action list occupies less than 60% of inspector height: $Label ($share)" }
+}
+function Capture-Layout([string]$Label) {
+    if (-not $CaptureScreenshots) { return }
+    [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+    Start-Sleep -Milliseconds 150
+    $bounds = $root.Current.BoundingRectangle
+    if ($bounds.IsEmpty) { throw 'Cannot capture empty manager window' }
+    $bitmap = [Drawing.Bitmap]::new([int]$bounds.Width, [int]$bounds.Height)
+    $graphics = [Drawing.Graphics]::FromImage($bitmap)
+    $path = Join-Path $appRoot ($Label + '.png')
+    try {
+        $graphics.CopyFromScreen([int]$bounds.Left, [int]$bounds.Top, 0, 0, $bitmap.Size)
+        $bitmap.Save($path, [Drawing.Imaging.ImageFormat]::Png)
+    } finally { $graphics.Dispose(); $bitmap.Dispose() }
+    Write-Output "Native screenshot: $path"
+}
+function Wheel([int]$Delta) {
+    [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+    Wait-Until 'owned manager foreground' { [ManagerActionsNative]::GetForegroundWindow() -eq $manager.MainWindowHandle }
+    $bounds = (Need-Node 'operation-list').Current.BoundingRectangle
+    [ManagerActionsNative]::SetCursorPos([int]($bounds.Right - 25), [int]($bounds.Top + $bounds.Height / 2)) | Out-Null
+    [ManagerActionsNative]::mouse_event(0x0800, 0, 0, $Delta, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 60
+}
+function Scroll-To([string]$Id, [int]$Direction) {
+    $previous = ''
+    $stagnant = 0
+    for ($step = 0; $step -lt 80; $step++) {
+        $bounds = (Need-Node 'operation-list').Current.BoundingRectangle
+        if (In-Bounds $Id $bounds) { return }
+        $rect = (Need-Node $Id).Current.BoundingRectangle
+        $signature = "$rect;$bounds"
+        $stagnant = if ($signature -ceq $previous) { $stagnant + 1 } else { 0 }
+        if ($stagnant -ge 4) { throw "Scrolling stalled before $Id; target=$rect; viewport=$bounds" }
+        $previous = $signature
+        $distance = if (-not $rect.IsEmpty -and $rect.Top -lt $bounds.Top) { $rect.Top - $bounds.Top } elseif (-not $rect.IsEmpty) { $rect.Bottom - $bounds.Bottom } else { -$Direction * $bounds.Height * 2 }
+        $sign = if ($distance -lt 0) { 1 } else { -1 }
+        $stepSize = if ([Math]::Abs($distance) -gt $bounds.Height) { 1200 } else { 120 }
+        Wheel ($sign * $stepSize)
+    }
+    throw "Could not scroll to $Id"
+}
+function Expanded-Names {
+    @($root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -match '^operation-\d+-name$' })
+}
+function Set-AllExpanded([bool]$Expanded) {
+    $count = @(Expanded-Names).Count
+    if (-not $Expanded) {
+        if ($count -gt 0) { Invoke-Id 'operation-toggle-all' }
+    } elseif ($count -ne $expected.Count) {
+        if ($count -gt 0) { Invoke-Id 'operation-toggle-all' }
+        Invoke-Id 'operation-toggle-all'
+    }
+    $wanted = if ($Expanded) { $expected.Count } else { 0 }
+    Wait-Until "expanded action input count $wanted" { @(Expanded-Names).Count -eq $wanted }
+}
+function Save-Route {
+    Invoke-Name '保存'
+    if ($null -ne (Named '备份并保存')) { Invoke-Name '备份并保存' }
+    Wait-Ready
+    Wait-Until 'cache written and clean route' {
+        (Test-Path -LiteralPath (Join-Path $routes '_cache\Actions.json')) -and $null -eq (Named '有未保存修改') -and $null -eq (Node 'confirmation-dialog')
+    }
+}
+function Assert-Cache {
+    $cached = [IO.File]::ReadAllText((Join-Path $routes '_cache\Actions.json')) | ConvertFrom-Json
+    if ($cached.format -cne 'route/v1' -or $cached.points[0].id -ne 42 -or $cached.points[1].id -ne 7) { throw 'Route or point identity changed' }
+    if (@($cached.points[0].operations).Count -ne $expected.Count -or @($cached.points[1].operations).Count -ne 0) { throw 'Unexpected action count or cross-point mutation' }
+    for ($i = 0; $i -lt $expected.Count; $i++) {
+        foreach ($property in $expected[$i].PSObject.Properties) {
+            $actualProperty = $cached.points[0].operations[$i].PSObject.Properties[$property.Name]
+            if ($null -eq $actualProperty) { throw "Missing persisted operations[$i].$($property.Name)" }
+            $actual = ConvertTo-Json -InputObject $actualProperty.Value -Depth 8 -Compress
+            $wanted = ConvertTo-Json -InputObject $property.Value -Depth 8 -Compress
+            if ($actual -cne $wanted) { throw "Persisted operations[$i].$($property.Name) mismatch: actual=$actual expected=$wanted" }
+        }
+    }
+}
+function Assert-FirstNames {
+    for ($i = 0; $i -lt 6; $i++) {
+        if ((Input-Value "operation-$i-name") -cne $expected[$i].name) { throw "Action name $i lost after rebuilding controls" }
+    }
+    if ((Input-Value 'operation-0-clicks') -ne '3') { throw 'Edited click parameter lost' }
+}
+function Action-Button([string]$Prefix, [int]$Number) {
+    Scroll-To ('operation-toggle-' + ($Number - 1)) 1
+    $pattern = '^' + [regex]::Escape($Prefix + $Number) + '(?:\s|$)'
+    $buttons = @($root.FindAll($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)) | Where-Object { $_.Current.Name -match $pattern })
+    if ($buttons.Count -ne 1) { throw "Expected one action button: $Prefix$Number; found $($buttons.Count)" }
+    $buttons[0]
+}
+try {
+    Write-Output "Isolated manager action sandbox: $appRoot"
+    Start-Manager
+    Resize-Manager 1280 900
+    if ($null -ne (Node 'point_name') -or $null -ne (Node 'point_note')) { throw 'Point metadata should start collapsed' }
+    Assert-Toolbar
+    Capture-Layout 'manager-startup'
+    Invoke-Id 'operation-toggle-0'
+    Wait-Until 'first action collapsed' { $null -eq (Node 'operation-0-name') }
+    Invoke-Id 'operation-toggle-0'
+    Wait-Until 'first action expanded' { $null -ne (Node 'operation-0-name') }
+    Set-AllExpanded $false
+    Set-AllExpanded $true
+    Invoke-Id 'point-info-toggle'
+    Assert-InList 'point_name'
+    Invoke-Id 'point-info-toggle'
+    if ($null -ne (Named '有未保存修改') -or [IO.File]::ReadAllText($routePath) -cne $originalSource) { throw 'Disclosure controls dirtied or wrote the route' }
+    Open-Route 'Other'
+    Open-Route 'Actions'
+
+    foreach ($size in @(@(1280, 900), @(900, 640))) {
+        Resize-Manager $size[0] $size[1]
+        # In compact mode the library must be hidden so the editor gets its intended width.
+        if ($size[0] -eq 900 -and $null -ne (Node 'route-Actions')) { Invoke-Name '路线库' }
+        Assert-Toolbar
+        $label = if ($size[0] -eq 900) { 'manager-compact' } else { 'manager-default' }
+        Record-Layout $label
+        Scroll-To 'operation-toggle-0' 1
+        Capture-Layout $label
+        if ($size[0] -eq 900) {
+            Invoke-Name '路线库'
+            Assert-Toolbar
+            Record-Layout 'manager-compact-library-open' $false
+            Capture-Layout 'manager-compact-library-open'
+            Invoke-Name '路线库'
+            Assert-Toolbar
+        }
+        $before = (Node 'operation-toolbar').Current.BoundingRectangle
+        Invoke-Id 'point-info-toggle'
+        Scroll-To 'point_name' 1
+        Assert-InList 'point_name'
+        Scroll-To 'operation-35-name' -1
+        $after = (Node 'operation-toolbar').Current.BoundingRectangle
+        if ([Math]::Abs($before.Top - $after.Top) -gt 1 -or [Math]::Abs($before.Bottom - $after.Bottom) -gt 1) { throw 'Adding toolbar moved while scrolling the action list' }
+        Assert-Toolbar
+        if (In-Bounds 'point_name' (Node 'operation-list').Current.BoundingRectangle) { throw 'Expanded point metadata did not scroll away' }
+        Invoke-Id 'point-info-toggle'
+        if ($null -ne (Node 'point_name') -or $null -ne (Node 'point_note')) { throw 'Collapsed point metadata remains rendered' }
+    }
+
+    # Add every kind while at the end of the long list at minimum client size.
+    foreach ($kind in $kinds) {
+        $index = $expected.Count
+        Invoke-Id ('operation-add-' + $kind)
+        Assert-Toolbar
+        Assert-InList "operation-toggle-$index"
+        Assert-InList "operation-$index-name"
+        $name = "新增中文动作 $kind"
+        Set-Input "operation-$index-name" $name
+        $operation = [ordered]@{ type = $kind; name = $name }
+        switch ($kind) {
+            'click' { $operation.pos = @(0.123456789, 0.876543219); $operation.button = 'left'; $operation.clicks = 1 }
+            'key' { $operation.key = 'w'; $operation.up = $false }
+            'press' { $operation.key = 'w'; $operation.ms = 500 }
+            'wheel' { $operation.delta = 1 }
+            'drag' { $operation.from = @(0.123456789, 0.876543219); $operation.to = @(0.123456789, 0.876543219); $operation.duration = 200 }
+            'wait' { $operation.ms = 100 }
+        }
+        $expected.Add([pscustomobject]$operation)
+    }
+
+    Resize-Manager 1280 900
+    Set-AllExpanded $true
+    Scroll-To 'operation-toggle-0' 1
+    $names = @('命名动作一 "打开仓库"', "命名动作二 '地图'", '命名动作三 按住前进', '命名动作四 向下滚动', '命名动作五 拖到目标', '命名动作六 等待加载 🦀')
+    for ($i = 0; $i -lt 6; $i++) {
+        Set-Input "operation-$i-name" $names[$i]
+        $expected[$i].name = $names[$i]
+    }
+    Set-Input 'operation-0-clicks' '3'
+    $expected[0].clicks = 3
+    Scroll-To 'operation-toggle-0' 1
+    Invoke-Id 'operation-toggle-0'
+    Wait-Until 'edited action collapsed before moving' { $null -eq (Node 'operation-0-name') }
+    Invoke-Node (Action-Button '下移动作 ' 1)
+    $first = $expected[0]; $expected[0] = $expected[1]; $expected[1] = $first
+    Wait-Until 'moved collapsed action identity and name' { $null -eq (Node 'operation-1-name') -and (Input-Value 'operation-0-name') -ceq $names[1] }
+    Invoke-Node (Action-Button '上移动作 ' 2)
+    $first = $expected[0]; $expected[0] = $expected[1]; $expected[1] = $first
+    if ($null -ne (Node 'operation-0-name')) { throw 'Collapsed state did not follow action back upward' }
+    Invoke-Id 'operation-toggle-0'
+    Assert-FirstNames
+    Scroll-To 'operation-toggle-6' -1
+    Invoke-Id 'operation-toggle-6'
+    Invoke-Node (Action-Button '删除动作 ' 7)
+    $expected.RemoveAt(6)
+    Assert-FirstNames
+    Save-Route
+    Assert-Cache
+
+    Invoke-Name 'YAML 源码'
+    $source = $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, '路线 YAML 源码'))
+    if ($null -eq $source) { throw 'YAML source editor missing' }
+    $yaml = $source.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
+    foreach ($prefix in @('命名动作一', '命名动作二', '命名动作三', '命名动作四', '命名动作五', '命名动作六')) {
+        if (-not $yaml.Contains($prefix)) { throw "Named action missing from YAML: $prefix" }
+    }
+    Invoke-Name '点位编辑'
+    Set-AllExpanded $true
+    Assert-FirstNames
+    Invoke-Id 'point-1'
+    if ($null -ne (Node 'operation-0-name')) { throw 'Empty point inherited action controls' }
+    Invoke-Id 'operation-add-wait'
+    Wait-Until 'sole action added' { $null -ne (Node 'operation-0-name') }
+    [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+    Wait-Until 'manager foreground before keyboard delete' { [ManagerActionsNative]::GetForegroundWindow() -eq $manager.MainWindowHandle }
+    Invoke-Node (Action-Button '删除动作 ' 1)
+    Wait-Until 'sole action removed' {
+        $null -eq (Node 'operation-0-name') -and $null -eq (Node 'operation-toggle-0')
+    }
+    # Activate the restored target with the keyboard; this verifies actual focus
+    # behavior even when the UIA provider reports HasKeyboardFocus=false.
+    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    Wait-Until 'keyboard activation after deleting sole action' { $null -ne (Node 'point_name') }
+    Assert-InList 'point_name'
+    Invoke-Id 'point-info-toggle'
+    Invoke-Id 'point-0'
+    Set-AllExpanded $true
+    Assert-FirstNames
+    Save-Route
+    Assert-Cache
+    # The compact manual library choice persists; reopen it only if necessary.
+    if ($null -eq (Node 'route-Other')) { Invoke-Name '路线库' }
+    Open-Route 'Other'
+    Open-Route 'Actions'
+    Set-AllExpanded $true
+    Assert-FirstNames
+    $manager.CloseMainWindow() | Out-Null
+    if (-not $manager.WaitForExit(5000)) { throw 'Clean manager did not close before restart' }
+    Start-Manager
+    if ($null -ne (Node 'point_name')) { throw 'Point metadata did not reset collapsed after restart' }
+    Set-AllExpanded $true
+    Assert-FirstNames
+    Assert-Cache
+    Write-Output 'Passed: 36 mixed actions, clean disclosure controls, metadata scroll/collapse, fixed toolbar at 1280x900 and 900x640, adding all six kinds at list end, Chinese action names and parameters through collapse/move/delete/save/YAML/point switch/route reopen/process restart. No playback requested.'
+} catch {
+    if ($null -ne $root) {
+        try {
+            $tree = @($root.FindAll($scope, [Windows.Automation.Condition]::TrueCondition) | ForEach-Object {
+                [pscustomobject]@{ Id = $_.Current.AutomationId; Name = $_.Current.Name; ControlType = $_.Current.ControlType.ProgrammaticName; Patterns = @($_.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }); Focused = $_.Current.HasKeyboardFocus; Enabled = $_.Current.IsEnabled; Offscreen = $_.Current.IsOffscreen; Bounds = $_.Current.BoundingRectangle.ToString() }
+            })
+            [IO.File]::WriteAllText((Join-Path $appRoot 'failure-tree.json'), (ConvertTo-Json -InputObject $tree -Depth 4), $utf8)
+        } catch { Write-Warning ('Could not write diagnostic accessibility tree: ' + $_.Exception.Message) }
+    }
+    throw
+} finally {
+    foreach ($process in $owned) {
+        $process.Refresh()
+        if (-not $process.HasExited) {
+            $process.CloseMainWindow() | Out-Null
+            if (-not $process.WaitForExit(1000)) { $process.Kill(); $process.WaitForExit() }
+        }
+    }
+}

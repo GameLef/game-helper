@@ -603,6 +603,30 @@ impl Picker {
         }));
         cx.notify();
     }
+    fn move_point(&mut self, point_id: u64, delta: isize, cx: &mut Context<Self>) {
+        if self.locked() || self.countdown.is_some() || !matches!(delta, -1 | 1) {
+            return;
+        }
+        let Some(index) = self.points.iter().position(|row| row.point.id == point_id) else {
+            return;
+        };
+        let Some(next) = index
+            .checked_add_signed(delta)
+            .filter(|next| *next < self.points.len())
+        else {
+            return;
+        };
+        self.points.swap(index, next);
+        // Keep the subscription paired with its name entity for later removal.
+        self.point_subscriptions.swap(index, next);
+        self.point_scroll.scroll_to_item(next);
+        self.changed(Duration::ZERO, cx);
+        self.feedback(
+            FeedbackKind::Info,
+            format!("已将点位移至第 {} 个，顺序自动保存", next + 1),
+        );
+        cx.notify();
+    }
     fn remove_point(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.locked() || index >= self.points.len() {
             return;

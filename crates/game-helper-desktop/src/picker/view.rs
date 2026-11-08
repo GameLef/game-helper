@@ -464,101 +464,140 @@ impl Picker {
         panel
     }
 
-    fn captured_points(&self, cx: &Context<Self>) -> Div {
-        let mut points = column().gap_2();
+    fn captured_points(&self, compact: bool, cx: &Context<Self>) -> Div {
+        // Rows must be direct scroll children so scroll_to_item addresses a point.
+        let mut points = column()
+            .id("picker-points")
+            .accessibility_id("picker-points")
+            .role(gpui_kit::Role::Group)
+            .aria_label("已采集点位列表")
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.point_scroll)
+            .gap_2()
+            .px_4()
+            .pb_4();
+        let ordering_locked = self.locked() || self.countdown.is_some();
         for (index, captured) in self.points.iter().enumerate() {
             let point_id = captured.point.id;
             let name_id = format!("point-name-{point_id}");
             let name = captured.name.read(cx).value().to_string();
+            let details = row()
+                .gap_3()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .w(px(26.))
+                        .flex_shrink_0()
+                        .text_center()
+                        .text_color(color(TEAL))
+                        .font_family("Bahnschrift")
+                        .text_size(px(17.))
+                        .child(format!("{:02}", index + 1)),
+                )
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Input::new(&captured.name)
+                            .id(name_id.clone())
+                            .accessibility_id(name_id)
+                            .aria_label(format!("第 {} 个点位的名称", index + 1))
+                            .disabled(self.locked())
+                            .w_full(),
+                    ),
+                )
+                .child(
+                    control(format!("copy-coordinate-{point_id}"), "", self.locked())
+                        .ghost()
+                        .h_auto()
+                        .w(px(120.))
+                        .flex_shrink_0()
+                        .accessibility_label(format!(
+                            "复制第 {} 个点位坐标 {}",
+                            index + 1,
+                            coordinate_text(captured.point.position)
+                        ))
+                        .tooltip("复制坐标，可直接粘贴到路线管理")
+                        .child(
+                            column()
+                                .gap_1()
+                                .font_family("Cascadia Mono")
+                                .text_size(px(12.))
+                                .text_color(color(MUTED))
+                                .child(format!("nx  {:.6}", captured.point.position[0]))
+                                .child(format!("ny  {:.6}", captured.point.position[1])),
+                        )
+                        .on_click(cx.listener(move |v, _, _, cx| v.copy_point(index, cx))),
+                );
+            let actions = row()
+                .flex_shrink_0()
+                .gap_1()
+                .child(
+                    control(
+                        format!("move-point-up-{point_id}"),
+                        "上移",
+                        ordering_locked || index == 0,
+                    )
+                    .ghost()
+                    .small()
+                    .accessibility_label(format!("上移第 {} 个点位 {}", index + 1, name))
+                    .on_click(cx.listener(move |v, _, _, cx| v.move_point(point_id, -1, cx))),
+                )
+                .child(
+                    control(
+                        format!("move-point-down-{point_id}"),
+                        "下移",
+                        ordering_locked || index + 1 == self.points.len(),
+                    )
+                    .ghost()
+                    .small()
+                    .accessibility_label(format!("下移第 {} 个点位 {}", index + 1, name))
+                    .on_click(cx.listener(move |v, _, _, cx| v.move_point(point_id, 1, cx))),
+                )
+                .child(
+                    control(format!("copy-point-{point_id}"), "复制", self.locked())
+                        .ghost()
+                        .small()
+                        .accessibility_label(format!("复制第 {} 个点位 {}", index + 1, name))
+                        .tooltip("复制坐标，可直接粘贴到路线管理")
+                        .on_click(cx.listener(move |v, _, _, cx| v.copy_point(index, cx))),
+                )
+                .child(
+                    control(
+                        format!("remove-point-{point_id}"),
+                        "删除",
+                        self.locked() || self.countdown.is_some(),
+                    )
+                    .ghost()
+                    .small()
+                    .text_color(color(RED))
+                    .accessibility_label(format!("删除第 {} 个点位 {}", index + 1, name))
+                    .on_click(cx.listener(move |v, _, _, cx| v.remove_point(index, cx))),
+                );
+            let content = if compact {
+                column()
+                    .gap_1()
+                    .child(details.w_full())
+                    .child(actions.w_full().justify_end())
+            } else {
+                row().gap_3().child(details).child(actions)
+            };
             points = points.child(
-                row()
-                    .gap_3()
+                column()
+                    .id(format!("captured-point-{point_id}"))
+                    .accessibility_id(format!("captured-point-{point_id}"))
+                    .role(gpui_kit::Role::Group)
+                    .aria_label(format!("第 {} 个点位 {}", index + 1, name))
+                    .flex_shrink_0()
                     .px_3()
                     .py_2()
                     .bg(color(PAPER))
                     .border_1()
                     .border_color(color(LINE))
                     .rounded(px(6.))
-                    .child(
-                        div()
-                            .w(px(26.))
-                            .flex_shrink_0()
-                            .text_center()
-                            .text_color(color(TEAL))
-                            .font_family("Bahnschrift")
-                            .text_size(px(17.))
-                            .child(format!("{:02}", index + 1)),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Input::new(&captured.name)
-                                .id(name_id.clone())
-                                .accessibility_id(name_id)
-                                .aria_label(format!("第 {} 个点位的名称", index + 1))
-                                .disabled(self.locked())
-                                .w_full(),
-                        ),
-                    )
-                    .child(
-                        control(format!("copy-coordinate-{point_id}"), "", self.locked())
-                            .ghost()
-                            .h_auto()
-                            .w(px(120.))
-                            .flex_shrink_0()
-                            .accessibility_label(format!(
-                                "复制第 {} 个点位坐标 {}",
-                                index + 1,
-                                coordinate_text(captured.point.position)
-                            ))
-                            .tooltip("复制坐标，可直接粘贴到路线管理")
-                            .child(
-                                column()
-                                    .gap_1()
-                                    .font_family("Cascadia Mono")
-                                    .text_size(px(12.))
-                                    .text_color(color(MUTED))
-                                    .child(format!("nx  {:.6}", captured.point.position[0]))
-                                    .child(format!("ny  {:.6}", captured.point.position[1])),
-                            )
-                            .on_click(cx.listener(move |v, _, _, cx| v.copy_point(index, cx))),
-                    )
-                    .child(
-                        row()
-                            .flex_shrink_0()
-                            .gap_1()
-                            .child(
-                                control(format!("copy-point-{point_id}"), "复制", self.locked())
-                                    .ghost()
-                                    .small()
-                                    .accessibility_label(format!(
-                                        "复制第 {} 个点位 {}",
-                                        index + 1,
-                                        name
-                                    ))
-                                    .tooltip("复制坐标，可直接粘贴到路线管理")
-                                    .on_click(
-                                        cx.listener(move |v, _, _, cx| v.copy_point(index, cx)),
-                                    ),
-                            )
-                            .child(
-                                control(
-                                    format!("remove-point-{point_id}"),
-                                    "删除",
-                                    self.locked() || self.countdown.is_some(),
-                                )
-                                .ghost()
-                                .small()
-                                .text_color(color(RED))
-                                .accessibility_label(format!(
-                                    "删除第 {} 个点位 {}",
-                                    index + 1,
-                                    name
-                                ))
-                                .on_click(
-                                    cx.listener(move |v, _, _, cx| v.remove_point(index, cx)),
-                                ),
-                            ),
-                    ),
+                    .child(content),
             );
         }
         if self.points.is_empty() {
@@ -615,21 +654,7 @@ impl Picker {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .id("picker-points")
-                    .accessibility_id("picker-points")
-                    .role(gpui_kit::Role::Group)
-                    .aria_label("已采集点位列表")
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.point_scroll)
-                    .px_4()
-                    .pb_4()
-                    .child(points),
-            )
+            .child(points)
     }
 
     fn picker_confirmation(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -723,13 +748,15 @@ impl Picker {
         let show_library = self
             .library_open
             .unwrap_or(window.viewport_size().width >= px(1000.));
+        let points_width =
+            window.viewport_size().width - if show_library { px(280.) } else { px(0.) };
         let workspace = column()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .child(self.target_header(show_library, cx))
             .child(self.coordinate_panel(cx))
-            .child(self.captured_points(cx));
+            .child(self.captured_points(points_width < px(760.), cx));
         let mut body = row().items_stretch().gap_0().flex_1().min_h_0().min_w_0();
         if show_library {
             body = body.child(self.window_library(cx));

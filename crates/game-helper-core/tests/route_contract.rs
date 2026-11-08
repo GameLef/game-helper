@@ -292,3 +292,146 @@ fn malformed_structures_rejected_and_list_order_retained() {
         vec![9, 2]
     );
 }
+
+#[test]
+fn operation_names_default_empty_for_new_and_legacy_actions() {
+    for kind in OpKind::ALL {
+        let operation = Operation::new(kind, [0.25, 0.75]);
+        assert!(operation.name.is_empty());
+        let value = serde_json::to_value(&operation).unwrap();
+        assert!(value.get("name").is_none());
+        let decoded: Operation = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, operation);
+    }
+
+    let legacy = Route::parse(VALID).unwrap();
+    let mut explicit_empty = raw();
+    for operation in explicit_empty["points"][0]["operations"]
+        .as_array_mut()
+        .unwrap()
+    {
+        operation["name"] = json!("");
+    }
+    assert_eq!(Route::from_value(&explicit_empty).unwrap(), legacy);
+    for source in [legacy.yaml().unwrap(), legacy.cache_json().unwrap()] {
+        let value: Value = yaml_serde::from_str(&source).unwrap();
+        for operation in value["points"][0]["operations"].as_array().unwrap() {
+            assert!(operation.get("name").is_none());
+        }
+    }
+    assert!(
+        legacy.points[0]
+            .operations
+            .iter()
+            .all(|operation| operation.name.is_empty())
+    );
+}
+
+#[test]
+fn names_and_parameters_round_trip_for_all_six_action_kinds() {
+    let names = [
+        "中文动作 🦀",
+        "  引号 '和\"  ",
+        "第一行\n第二行",
+        "",
+        "重复名称",
+        "重复名称",
+    ];
+    let baseline = Route::parse(VALID).unwrap();
+    let mut value = raw();
+    for (operation, name) in value["points"][0]["operations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip(names)
+    {
+        operation["name"] = json!(name);
+    }
+    let route = Route::from_value(&value).unwrap();
+    route.validate().unwrap();
+    assert_eq!(route.format, "route/v1");
+    for (index, operation) in route.points[0].operations.iter().enumerate() {
+        assert_eq!(operation.kind, OpKind::ALL[index]);
+        assert_eq!(operation.name, names[index]);
+        assert_eq!(
+            operation.params,
+            baseline.points[0].operations[index].params
+        );
+        assert!(!operation.params.contains_key("name"));
+    }
+
+    let yaml = route.yaml().unwrap();
+    assert_eq!(Route::parse(&yaml).unwrap(), route);
+    let cache = route.cache_json().unwrap();
+    let cache_value: Value = serde_json::from_str(&cache).unwrap();
+    assert_eq!(cache_value["format"], "route/v1");
+    for (index, name) in names.into_iter().enumerate() {
+        let operation = &cache_value["points"][0]["operations"][index];
+        if name.is_empty() {
+            assert!(operation.get("name").is_none());
+        } else {
+            assert_eq!(operation["name"], name);
+        }
+    }
+    assert_eq!(serde_json::from_str::<Route>(&cache).unwrap(), route);
+    assert_eq!(Route::from_value(&cache_value).unwrap(), route);
+}
+
+#[test]
+fn supplied_operation_names_require_strings_with_action_location() {
+    for index in 0..OpKind::ALL.len() {
+        for name in [
+            Value::Null,
+            json!(0),
+            json!(1.5),
+            json!(true),
+            json!(false),
+            json!([]),
+            json!({}),
+        ] {
+            let mut value = raw();
+            value["points"][0]["operations"][index]["name"] = name;
+            let location = format!("operations[{index}].name");
+            let error = Route::from_value(&value).unwrap_err().to_string();
+            assert!(error.contains(&location), "{error}");
+            assert!(error.contains("必须是字符串"), "{error}");
+            let yaml = yaml_serde::to_string(&value).unwrap();
+            let error = Route::parse(&yaml).unwrap_err().to_string();
+            assert!(error.contains(&location), "{error}");
+        }
+    }
+}
+
+#[test]
+fn action_names_survive_normalization_while_unknown_fields_are_filtered() {
+    let baseline = Route::parse(VALID).unwrap();
+    let mut value = raw();
+    for operation in value["points"][0]["operations"].as_array_mut().unwrap() {
+        operation["name"] = json!("已命名的动作");
+        operation["unknown"] = json!({"nested": [1, true, null]});
+    }
+    let mut route = Route::from_value(&value).unwrap();
+    for (index, operation) in route.points[0].operations.iter_mut().enumerate() {
+        assert_eq!(operation.name, "已命名的动作");
+        assert_eq!(
+            operation.params,
+            baseline.points[0].operations[index].params
+        );
+        // Exercise cache_json's second validation pass on in-memory parameters.
+        operation.params.insert("unknown".into(), json!("discard"));
+    }
+    route.validate().unwrap();
+    let cache: Value = serde_json::from_str(&route.cache_json().unwrap()).unwrap();
+    for operation in cache["points"][0]["operations"].as_array().unwrap() {
+        assert_eq!(operation["name"], "已命名的动作");
+        assert!(operation.get("unknown").is_none());
+    }
+    let normalized = Route::from_value(&cache).unwrap();
+    for (index, operation) in normalized.points[0].operations.iter().enumerate() {
+        assert_eq!(operation.name, "已命名的动作");
+        assert_eq!(
+            operation.params,
+            baseline.points[0].operations[index].params
+        );
+    }
+}

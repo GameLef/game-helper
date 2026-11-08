@@ -66,3 +66,45 @@ points:
     duration: 200
   - type: wait
     ms: 100
+- id: 4
+  name: 点位 4
+  note: ''
+  operations:
+  - type: key
+    key: enter
+    up: false
+  - type: wait
+    ms: 20
+  - type: click
+    pos:
+    - 0.025013
+    - 0.042632
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 20
+  - type: key
+    key: m
+    up: false
+  - type: click
+    pos:
+    - 0.092236
+    - 0.092678
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 200
+  - type: click
+    pos:
+    - 0.556019
+    - 0.505097
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 60
+  - type: click
+    pos:
+    - 0.976029
+    - 0.930491
+    button: left
+    clicks: 1

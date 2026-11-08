@@ -53,6 +53,8 @@ function Click-Node($node) {
  $patterns=@($node.GetSupportedPatterns() | ForEach-Object {$_.ProgrammaticName})
  if($patterns -contains 'InvokePatternIdentifiers.Pattern') {
   $node.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+ } elseif($patterns -contains 'TogglePatternIdentifiers.Pattern') {
+  $node.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Toggle()
  } elseif($patterns -contains 'ExpandCollapsePatternIdentifiers.Pattern') {
   $node.GetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
  } elseif($patterns -contains 'SelectionItemPatternIdentifiers.Pattern') {
@@ -60,13 +62,22 @@ function Click-Node($node) {
  } else {throw ('No activation pattern: '+$node.Current.Name+'; '+($patterns -join ', '))}
  Start-Sleep -Milliseconds 150
 }
+function Ensure-PointInfo($id) {
+ if($id -in @('point_name','point_note') -and $null -eq (By-Id $id)) {
+  Click-Node (By-Id 'point-info-toggle')
+ }
+}
 function Set-Input($id,$text) {
+ Ensure-PointInfo $id
  $node=By-Id $id
  if($null -eq $node){throw "Missing input $id"}
  $node.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($text)
  Start-Sleep -Milliseconds 100
 }
-function Input-Value($id) { (By-Id $id).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value }
+function Input-Value($id) {
+ Ensure-PointInfo $id
+ (By-Id $id).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
+}
 function Wait-Ready {
  for($i=0;$i -lt 50;$i++) {
   $node=By-Id 'manager-status'

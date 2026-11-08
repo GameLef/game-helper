@@ -66,6 +66,8 @@ impl OpKind {
 pub struct Operation {
     #[serde(rename = "type")]
     pub kind: OpKind,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(flatten)]
     pub params: Map<String, Value>,
 }
@@ -81,6 +83,7 @@ impl Operation {
         };
         Self {
             kind,
+            name: String::new(),
             params: value.as_object().cloned().unwrap_or_default(),
         }
     }

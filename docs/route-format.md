@@ -33,14 +33,17 @@ points:
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
+| `name` | string | 动作显示名，可为空或重复；缺失时为空字符串，结构化序列化时省略空名称 |
 | `jitter` | number | 随机抖动像素半径（执行时对换算后的物理坐标加 ±jitter 随机偏移），默认 0 |
+
+`name` 与 `type` 同级，六类操作均支持。提供名称时必须为字符串，`null`、数值、布尔值、数组和对象均无效，错误定位到 `points[i].operations[j].name`。名称原样保留于 YAML 和 JSON 执行缓存，AHK 忽略该显示元数据；格式仍为 `route/v1`，旧路线无需迁移。
 
 各类型专有字段：
 
 ### click 点击
 
 ```yaml
-- { type: click, pos: [0.95, 0.95], button: left, clicks: 1 }
+- { type: click, name: 打开仓库, pos: [0.95, 0.95], button: left, clicks: 1 }
 ```
 
 | 字段 | 必填 | 默认 | 说明 |

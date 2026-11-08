@@ -13,7 +13,8 @@ use gpui_kit::component::{
     select::{SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::{
-    App, AppContext, Context, Entity, IntoElement, Render, SharedString, Subscription, Task, Window,
+    App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, Render, ScrollHandle,
+    SharedString, Subscription, Task, Window,
 };
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
@@ -26,6 +27,9 @@ enum Action {
     ToggleFiles,
     ToggleService,
     ToggleNew,
+    TogglePointInfo,
+    ToggleOp(usize),
+    ToggleAllOps,
     Refresh,
     Open(PathBuf),
     New,
@@ -120,6 +124,9 @@ impl OperationInput {
 }
 struct OperationFields {
     kind: OpKind,
+    name: Entity<InputState>,
+    expanded: bool,
+    toggle_focus: FocusHandle,
     fields: Vec<(String, OperationInput)>,
 }
 
@@ -139,6 +146,10 @@ pub struct Manager {
     source: Entity<EditorState>,
     operation_fields: Vec<OperationFields>,
     operation_subscriptions: Vec<Subscription>,
+    point_info_open: bool,
+    point_info_focus: FocusHandle,
+    all_ops_focus: FocusHandle,
+    operation_scroll: ScrollHandle,
     selected: Option<usize>,
     form_pending: bool,
     source_pending: bool,
@@ -234,6 +245,10 @@ impl Manager {
             source,
             operation_fields: Vec::new(),
             operation_subscriptions: Vec::new(),
+            point_info_open: false,
+            point_info_focus: cx.focus_handle(),
+            all_ops_focus: cx.focus_handle(),
+            operation_scroll: ScrollHandle::new(),
             selected: None,
             form_pending: false,
             source_pending: false,
@@ -397,6 +412,7 @@ impl Manager {
                         }
                         Ok(Operation {
                             kind: row.kind,
+                            name: row.name.read(cx).value().to_string(),
                             params,
                         })
                     })
@@ -426,6 +442,7 @@ impl Manager {
         self.sync(window, cx);
     }
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_point_view();
         if let Some(doc) = self.document.as_ref() {
             let r = doc.route();
             for (k, val) in [
@@ -462,6 +479,13 @@ impl Manager {
         self.form_pending = false;
         self.source_pending = false;
     }
+    fn reset_point_view(&mut self) {
+        self.point_info_open = false;
+        // The first layout has no viewport bounds yet; item alignment would
+        // subtract its absolute origin from zero and hide the first action.
+        self.operation_scroll
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+    }
     fn sync_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.operation_fields.clear();
         self.operation_subscriptions.clear();
@@ -475,6 +499,20 @@ impl Manager {
             self.set("point_note", p.note.clone(), window, cx);
             let position = p.action_position();
             for op in p.operations {
+                let name = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder("例如：打开仓库")
+                        .default_value(op.name)
+                });
+                self.operation_subscriptions.push(cx.subscribe(
+                    &name,
+                    |v, _, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            v.form_pending = true;
+                            cx.notify();
+                        }
+                    },
+                ));
                 let mut params = Operation::new(op.kind, position).params;
                 params.extend(op.params);
                 params
@@ -524,6 +562,9 @@ impl Manager {
                 }
                 self.operation_fields.push(OperationFields {
                     kind: op.kind,
+                    name,
+                    expanded: true,
+                    toggle_focus: cx.focus_handle(),
                     fields,
                 });
             }
@@ -578,6 +619,34 @@ impl Manager {
             Action::ToggleLibrary => {
                 let wide = window.viewport_size().width >= gpui_kit::px(1100.);
                 self.library_open = Some(!self.library_open.unwrap_or(wide));
+            }
+            Action::TogglePointInfo => {
+                self.point_info_open = !self.point_info_open;
+                if self.point_info_open {
+                    self.operation_scroll.scroll_to_top_of_item(0);
+                    self.fields["point_name"]
+                        .read(cx)
+                        .focus_handle(cx)
+                        .focus(window, cx);
+                } else {
+                    self.point_info_focus.focus(window, cx);
+                }
+            }
+            Action::ToggleOp(index) => {
+                if let Some(op) = self.operation_fields.get_mut(index) {
+                    op.expanded = !op.expanded;
+                    op.toggle_focus.focus(window, cx);
+                    self.operation_scroll
+                        .scroll_to_top_of_item(index + usize::from(self.point_info_open));
+                }
+            }
+            Action::ToggleAllOps => {
+                let expand = !self.operation_fields.iter().any(|op| op.expanded);
+                for op in &mut self.operation_fields {
+                    op.expanded = expand;
+                }
+                self.all_ops_focus.focus(window, cx);
+                self.operation_scroll.scroll_to_top_of_item(0);
             }
             Action::ToggleProperties => self.properties_open = !self.properties_open,
             Action::ToggleFiles => self.files_open = !self.files_open,
@@ -664,7 +733,9 @@ impl Manager {
             Action::Select(index) => {
                 self.flush(cx)?;
                 self.selected = Some(index);
+                self.reset_point_view();
                 self.sync_point(window, cx);
+                self.point_info_focus.focus(window, cx);
             }
             Action::AddPoint
             | Action::RemovePoint
@@ -673,6 +744,14 @@ impl Manager {
             | Action::RemoveOp(_)
             | Action::MoveOp(_, _) => {
                 self.flush(cx)?;
+                let mut view_states: Vec<_> = self
+                    .operation_fields
+                    .iter()
+                    .map(|op| (op.expanded, op.toggle_focus.clone()))
+                    .collect();
+                let mut reveal = None;
+                let adding_op = matches!(action, Action::AddOp(_));
+                let changing_point = matches!(action, Action::AddPoint | Action::RemovePoint);
                 let doc = self.document.as_mut().context("请选择路线")?;
                 let selected = self.selected;
                 doc.edit(|route| match action {
@@ -704,12 +783,17 @@ impl Manager {
                         if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
                             let position = p.action_position();
                             p.operations.push(Operation::new(kind, position));
+                            reveal = Some(p.operations.len() - 1);
+                            view_states.push((true, cx.focus_handle()));
                         }
                     }
                     Action::RemoveOp(index) => {
                         if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
                             if index < p.operations.len() {
                                 p.operations.remove(index);
+                                view_states.remove(index);
+                                reveal = (!p.operations.is_empty())
+                                    .then(|| index.min(p.operations.len() - 1));
                             }
                         }
                     }
@@ -718,12 +802,36 @@ impl Manager {
                             let next = index as i32 + delta;
                             if next >= 0 && (next as usize) < p.operations.len() {
                                 p.operations.swap(index, next as usize);
+                                view_states.swap(index, next as usize);
+                                reveal = Some(next as usize);
                             }
                         }
                     }
                     _ => {}
                 })?;
+                if changing_point {
+                    self.reset_point_view();
+                }
                 self.sync_point(window, cx);
+                if !changing_point {
+                    for (op, (expanded, focus)) in self.operation_fields.iter_mut().zip(view_states)
+                    {
+                        op.expanded = expanded;
+                        op.toggle_focus = focus;
+                    }
+                }
+                if let Some(index) = reveal {
+                    self.operation_scroll
+                        .scroll_to_top_of_item(index + usize::from(self.point_info_open));
+                    let op = &self.operation_fields[index];
+                    if adding_op {
+                        op.name.read(cx).focus_handle(cx).focus(window, cx);
+                    } else {
+                        op.toggle_focus.focus(window, cx);
+                    }
+                } else if changing_point || self.operation_fields.is_empty() {
+                    self.point_info_focus.focus(window, cx);
+                }
             }
             Action::Save(ack, next) => {
                 self.flush(cx)?;

@@ -110,6 +110,13 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
         .with_context(|| {
             format!("{location}: 未知操作类型（支持 click/key/press/wheel/drag/wait）")
         })?;
+    let name = match raw.get("name") {
+        None => String::new(),
+        Some(value) => value
+            .as_str()
+            .with_context(|| format!("{location}.name: 必须是字符串"))?
+            .to_owned(),
+    };
     let mut params = Map::new();
     if let Some(jitter) = raw.get("jitter") {
         let value = number(jitter, &format!("{location}.jitter"), false, Some(0.0))?;
@@ -182,5 +189,5 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
     if params.contains_key("type") {
         bail!("{location}: 参数不能覆盖操作类型");
     }
-    Ok(Operation { kind, params })
+    Ok(Operation { kind, name, params })
 }
