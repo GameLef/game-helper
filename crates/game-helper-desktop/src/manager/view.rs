@@ -95,7 +95,7 @@ impl Manager {
 
     fn route_library(&self, cx: &Context<Self>) -> impl IntoElement {
         let query = self.search.read(cx).value().to_lowercase();
-        let mut entries = column().gap_1();
+        let mut entries = column().gap(px(2.));
         let mut visible = 0;
         for (i, entry) in self.routes.iter().enumerate() {
             if !query.is_empty()
@@ -112,39 +112,66 @@ impl Manager {
                 .and_then(|c| c.value.binding_for(&entry.stem))
                 .map(|b| b.hotkey.as_str())
                 .unwrap_or("未绑定");
-            let mut title = column()
-                .gap_1()
-                .flex_1()
-                .overflow_hidden()
+            let file = format!("{}.yaml", entry.stem);
+            let detail = format!(
+                "{}\n{}\n{} 个点位 · {}{}",
+                entry.name,
+                file,
+                entry.points,
+                binding,
+                entry
+                    .error
+                    .as_ref()
+                    .map(|e| format!("\n格式有误，打开修复：{e}"))
+                    .unwrap_or_default(),
+            );
+            let tooltip = detail.clone();
+            let summary = if entry.error.is_some() {
+                list_detail("格式有误", selected).text_color(color(DANGER))
+            } else {
+                list_detail(format!("{} 点", entry.points), selected)
+            };
+            let title = column()
+                .w_full()
+                .gap(px(2.))
                 .child(
-                    div()
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(entry.name.clone()),
-                )
-                .child(
-                    list_detail(format!("{}.yaml", entry.stem), selected)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap(),
+                    row()
+                        .w_full()
+                        .line_height(px(20.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(entry.name.clone()),
+                        )
+                        .child(summary.flex_shrink_0().whitespace_nowrap()),
                 )
                 .child(
                     row()
-                        .justify_between()
-                        .child(list_detail(format!("{} 个点位", entry.points), selected))
-                        .child(list_detail(binding.to_owned(), selected)),
+                        .w_full()
+                        .line_height(px(16.))
+                        .child(
+                            list_detail(file, selected)
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap(),
+                        )
+                        .child(
+                            list_detail(binding.to_owned(), selected)
+                                .flex_shrink_0()
+                                .max_w(px(88.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap(),
+                        ),
                 );
-            if entry.error.is_some() {
-                title = title.child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(color(DANGER))
-                        .child("格式有误，打开修复"),
-                );
-            }
             let variant = ButtonCustomVariant::new(cx)
                 .color(color(SURFACE))
                 .foreground(color(TEXT))
@@ -159,12 +186,15 @@ impl Manager {
                     cx,
                 )
                 .accessibility_id(format!("route-{}", entry.stem))
-                .accessibility_label(format!("{} {}", entry.stem, entry.name))
+                .accessibility_label(format!("{} {}", entry.stem, detail.replace('\n', "，")))
+                .tooltip(tooltip)
                 .custom(variant)
                 .selected(selected)
                 .w_full()
-                .h_auto()
-                .p_3()
+                .h(px(48.))
+                .flex_shrink_0()
+                .px_2()
+                .py_1()
                 .border_l_2()
                 .border_color(color(if selected { EMPHASIS } else { SURFACE }))
                 .child(title),
@@ -178,36 +208,43 @@ impl Manager {
             });
         }
         let mut tools = column()
-            .gap_3()
-            .p_4()
+            .flex_shrink_0()
+            .gap_2()
+            .px_3()
+            .py_2()
             .child(
                 row()
                     .justify_between()
                     .child(heading("路线库"))
                     .child(muted(format!("{} 条", self.routes.len()))),
             )
-            .child(
+            .child(Styled::h(
                 Input::new(&self.search)
+                    .small()
                     .disabled(self.controls_busy() || self.confirmation.is_some())
                     .w_full(),
-            )
+                px(28.),
+            ))
             .child(
                 row()
                     .flex_wrap()
                     .child(
                         self.button("new-toggle", "新建路线", Action::ToggleNew, false, cx)
                             .secondary()
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     )
                     .child(
                         self.button("import", "导入", Action::Import, false, cx)
                             .ghost()
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     )
                     .child(
                         self.button("refresh", "刷新", Action::Refresh, false, cx)
                             .ghost()
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     ),
             );
         if self.new_open {
@@ -236,6 +273,9 @@ impl Manager {
             .child(
                 div()
                     .id("route-list")
+                    .accessibility_id("route-list")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("路线列表")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -245,7 +285,9 @@ impl Manager {
             )
             .child(
                 muted("路线仅在点击保存后写入文件")
-                    .p_3()
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_2()
                     .border_t_1()
                     .border_color(color(BORDER)),
             )
@@ -488,47 +530,27 @@ impl Manager {
             .expect("document workspace")
             .route()
             .points;
-        let mut sequence = column();
+        let mut sequence = column().gap(px(2.));
+        let number_width = px(28. + points.len().to_string().len().saturating_sub(3) as f32 * 8.);
         for (i, point) in points.iter().enumerate() {
             let selected = self.selected == Some(i);
-            let number = column()
-                .w(px(32.))
-                .flex_shrink_0()
-                .items_center()
-                .child(
-                    div()
-                        .size(px(30.))
-                        .rounded_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(color(if selected { EMPHASIS } else { CANVAS }))
-                        .text_color(color(if selected { SURFACE } else { MUTED }))
-                        .font_family("Bahnschrift")
-                        .text_size(px(15.))
-                        .child((i + 1).to_string()),
-                )
-                .child(
-                    div()
-                        .w(px(1.))
-                        .h(px(26.))
-                        .bg(color(if i + 1 < points.len() {
-                            BORDER
-                        } else if selected {
-                            LIST_SELECTED
-                        } else {
-                            SURFACE
-                        })),
-                );
             let name = if selected {
                 self.text("point_name", cx)
             } else {
                 point.name.clone()
             };
+            let detail = format!(
+                "第 {} 点 {}，{} 个动作",
+                i + 1,
+                name,
+                point.operations.len()
+            );
+            let tooltip = detail.clone();
             sequence = sequence.child(
                 self.button(("point", i), "", Action::Select(i), false, cx)
                     .accessibility_id(format!("point-{i}"))
-                    .accessibility_label(format!("第 {} 点 {}", i + 1, name))
+                    .accessibility_label(detail)
+                    .tooltip(tooltip)
                     .custom(
                         ButtonCustomVariant::new(cx)
                             .color(color(SURFACE))
@@ -538,31 +560,43 @@ impl Manager {
                     )
                     .selected(selected)
                     .w_full()
-                    .h_auto()
+                    .h(px(36.))
+                    .flex_shrink_0()
                     .border_l_2()
                     .border_color(color(if selected { EMPHASIS } else { SURFACE }))
-                    .px_3()
-                    .pt_3()
-                    .pb_0()
+                    .px_2()
+                    .py_1()
                     .child(
-                        row().w_full().items_start().gap_3().child(number).child(
-                            column()
-                                .flex_1()
-                                .gap_1()
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .child(name),
-                                )
-                                .child(list_detail(
-                                    format!("{} 个动作", point.operations.len()),
-                                    selected,
-                                )),
-                        ),
+                        row()
+                            .w_full()
+                            .gap_2()
+                            .line_height(px(20.))
+                            .child(
+                                div()
+                                    .w(number_width)
+                                    .flex_shrink_0()
+                                    .text_right()
+                                    .text_color(color(if selected { EMPHASIS } else { MUTED }))
+                                    .font_family("Bahnschrift")
+                                    .text_size(px(13.))
+                                    .child((i + 1).to_string()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(name),
+                            )
+                            .child(
+                                list_detail(format!("{} 动作", point.operations.len()), selected)
+                                    .flex_shrink_0()
+                                    .whitespace_nowrap(),
+                            ),
                     ),
             );
         }
@@ -576,24 +610,26 @@ impl Manager {
             .border_r_1()
             .border_color(color(BORDER))
             .child(
-                column()
-                    .gap_3()
-                    .p_4()
-                    .child(
-                        row()
-                            .justify_between()
-                            .child(heading("点位序列"))
-                            .child(muted(format!("{} 个", points.len()))),
-                    )
+                row()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .px_3()
+                    .py_2()
+                    .child(heading("点位序列").flex_shrink_0())
+                    .child(muted(format!("{}", points.len())).flex_1())
                     .child(
                         self.button("add-point", "新增点位", Action::AddPoint, false, cx)
                             .secondary()
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     ),
             )
             .child(
                 div()
                     .id("points")
+                    .accessibility_id("points")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("点位列表")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -604,7 +640,9 @@ impl Manager {
                 row()
                     .flex_wrap()
                     .gap_1()
-                    .p_3()
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_2()
                     .border_t_1()
                     .border_color(color(BORDER))
                     .child(
@@ -616,7 +654,8 @@ impl Manager {
                             cx,
                         )
                         .ghost()
-                        .small(),
+                        .small()
+                        .h(px(28.)),
                     )
                     .child(
                         self.button(
@@ -627,7 +666,8 @@ impl Manager {
                             cx,
                         )
                         .ghost()
-                        .small(),
+                        .small()
+                        .h(px(28.)),
                     )
                     .child(
                         self.button(
@@ -639,6 +679,7 @@ impl Manager {
                         )
                         .ghost()
                         .small()
+                        .h(px(28.))
                         .text_color(color(DANGER)),
                     ),
             )

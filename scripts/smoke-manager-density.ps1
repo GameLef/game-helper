@@ -35,7 +35,9 @@ $routes = Join-Path $appRoot 'routes'
 [IO.Directory]::CreateDirectory((Join-Path $appRoot 'ahk')) | Out-Null
 $utf8 = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $appRoot 'ahk\daemon.ahk'), '; Inert density smoke fixture; never executed.', $utf8)
-[IO.File]::WriteAllText((Join-Path $appRoot 'config.json'), '{"routesDir":"routes","autoStartDaemon":false,"autoReloadOnSave":false,"hotkeys":{"stopAll":"F12","bindings":[]}}', $utf8)
+$longHotkey = '^!+#Browser_Back'
+$config = @{ routesDir = 'routes'; autoStartDaemon = $false; autoReloadOnSave = $false; hotkeys = @{ stopAll = 'F12'; bindings = @(@{ hotkey = $longHotkey; route = 'Compact_00'; startAt = 1 }) } }
+[IO.File]::WriteAllText((Join-Path $appRoot 'config.json'), ($config | ConvertTo-Json -Depth 5), $utf8)
 $longStem = 'Density_' + ('long_' * 18)
 $longRoute = '用于检查工具栏省略和保存按钮可见性的长路线名称' * 12
 $longPoint = '用于检查动作工具栏换行的长点位名称' * 14
@@ -227,6 +229,69 @@ function Reveal-Property([string]$Id) {
     throw "Cannot reveal property $Id inside bounded property panel"
 }
 
+function Measure-CompactList([string]$ViewportId, [string]$RowPattern, [int]$Height, [int]$ExpectedCount) {
+    $viewport = Need-Node $ViewportId
+    $bounds = $viewport.Current.BoundingRectangle
+    $scale = Scale
+    if (-not (In-Bounds $viewport $root.Current.BoundingRectangle)) { throw "List viewport clipped: $ViewportId" }
+    $rows = @($viewport.FindAll($scope, [Windows.Automation.Condition]::TrueCondition) | Where-Object { $_.Current.AutomationId -match $RowPattern })
+    if ($rows.Count -ne $ExpectedCount) { throw "${ViewportId}: expected $ExpectedCount accessible rows, found $($rows.Count)" }
+    $full = @()
+    $partial = 0
+    foreach ($control in $rows) {
+        $r = $control.Current.BoundingRectangle
+        if ($r.IsEmpty -or $control.Current.IsOffscreen -or $r.Bottom -le $bounds.Top -or $r.Top -ge $bounds.Bottom) { continue }
+        if (-not (In-Bounds $control $bounds)) { $partial++; continue }
+        $rowHeight = $r.Height / $scale
+        if ([Math]::Abs($rowHeight - $Height) -gt 1) { throw "$($control.Current.AutomationId): expected $Height DIP, found $rowHeight" }
+        $full += [pscustomobject]@{ id = $control.Current.AutomationId; top = $r.Top / $scale; bottom = $r.Bottom / $scale; height = $rowHeight }
+    }
+    $full = @($full | Sort-Object top)
+    if ($full.Count -lt 2) { throw "Too few fully visible rows in $ViewportId" }
+    $gaps = @(for ($i = 1; $i -lt $full.Count; $i++) {
+        $gap = $full[$i].top - $full[$i - 1].bottom
+        if ([Math]::Abs($gap - 2) -gt 1) { throw "${ViewportId}: expected 2 DIP gap, found $gap" }
+        $gap
+    })
+    [pscustomobject]@{
+        accessibleRows = $rows.Count; visibleRows = $full.Count + $partial; fullyVisibleRows = $full.Count; partiallyVisibleRows = $partial
+        viewportWidth = $bounds.Width / $scale; viewportHeight = $bounds.Height / $scale
+        targetRowHeight = $Height; targetGap = 2; rows = $full; gaps = $gaps
+    }
+}
+function Reveal-ListItem([string]$ViewportId, [string]$Id) {
+    $control = Need-Node $Id
+    $patterns = @($control.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })
+    if ($patterns -contains 'ScrollItemPatternIdentifiers.Pattern') {
+        $control.GetCurrentPattern([Windows.Automation.ScrollItemPattern]::Pattern).ScrollIntoView()
+        Start-Sleep -Milliseconds 125
+    }
+    for ($step = 0; $step -lt 80; $step++) {
+        $viewport = (Need-Node $ViewportId).Current.BoundingRectangle
+        $control = Need-Node $Id
+        if (In-Bounds $control $viewport) { return }
+        $r = $control.Current.BoundingRectangle
+        $distance = if ($r.Top -lt $viewport.Top) { $viewport.Top - $r.Top } else { $r.Bottom - $viewport.Bottom }
+        $amount = if ($distance -gt $viewport.Height) { 1200 } else { 120 }
+        if ($r.Top -ge $viewport.Top) { $amount = -$amount }
+        Foreground-Owned
+        [ManagerDensityNative]::SetCursorPos([int]($viewport.Left + $viewport.Width / 2), [int]($viewport.Top + $viewport.Height / 2)) | Out-Null
+        [ManagerDensityNative]::mouse_event(0x0800, 0, 0, $amount, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 90
+    }
+    throw "Cannot reveal $Id in $ViewportId"
+}
+function Assert-PointSelection([int]$Index, [string]$Name) {
+    Reveal-ListItem 'points' ('point-' + $Index)
+    Invoke-Id ('point-' + $Index)
+    if ($null -eq (Node 'point_name')) { Invoke-Id 'point-info-toggle' }
+    $value = (Need-Node 'point_name').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
+    if ($value -cne $Name) { throw "Point selection mismatch at index ${Index}: $value" }
+}
+function Assert-PointMoveState([bool]$Up, [bool]$Down) {
+    if ((Named '上移').Current.IsEnabled -ne $Up -or (Named '下移').Current.IsEnabled -ne $Down) { throw "Wrong point move state: up=$Up down=$Down" }
+}
+
 try {
     Write-Output "Isolated density sandbox: $appRoot"
     $manager = Start-Process -FilePath $exe -ArgumentList @('--app-root', ('"' + $appRoot + '"')) -PassThru
@@ -310,6 +375,87 @@ try {
     Assert-Layout 'yaml-error-compact'
     Capture 'yaml-error-compact'
 
+    # Add stress data only after the original welcome/long-name/error checks.
+    $densePoints = @(for ($i = 1; $i -le 120; $i++) {
+        $pointName = if ($i -eq 1) { $longPoint } else { "密度点位 $i" }
+        $actionCount = if ($i -eq 100) { 3 } else { 1 }
+        @{ id = $i; name = $pointName; operations = @(for ($j = 1; $j -le $actionCount; $j++) { @{ type = 'wait'; name = "密度动作 $j"; ms = 1 } }) }
+    })
+    $denseFixture = [ordered]@{
+        format = 'route/v1'; name = $longRoute; note = 'Separate compact list fixture'
+        target = @{ process = 'never-playback.exe'; windowClass = 'DensityFixture'; title = '离线目标窗口' }
+        points = $densePoints
+    }
+    for ($i = 0; $i -lt 24; $i++) {
+        $denseFixture.name = if ($i -eq 0) { $longRoute } else { "紧凑路线 $i" }
+        $denseFixture.points = if ($i -eq 0) { ,$densePoints } elseif ($i -eq 1) { ,@(@{ id = 0; name = $errorPoint; operations = @() }) } else { ,@() }
+        [IO.File]::WriteAllText((Join-Path $routes ('Compact_{0:D2}.yaml' -f $i)), ($denseFixture | ConvertTo-Json -Depth 10), $utf8)
+    }
+    Invoke-Name '刷新'
+    Wait-Until 'compact fixture library refreshed' { $null -ne (Node 'route-Compact_00') }
+    Open-Route 'Compact_00'
+    $hundredName = (Need-Node 'point-99').Current.Name
+    if ($hundredName -notmatch '^第 100 点 ' -or -not $hundredName.Contains('密度点位 100') -or -not $hundredName.Contains('3 个动作')) { throw "Incomplete point 100 accessible name: $hundredName" }
+    if (-not (Need-Node 'route-Compact_00').Current.Name.Contains($longHotkey)) { throw 'Long route hotkey missing from accessible name' }
+    if (-not (Need-Node 'route-Compact_01').Current.Name.Contains('格式有误')) { throw 'Invalid compact route was not reported' }
+    foreach ($size in @(@(1280, 900), @(900, 640))) {
+        Resize-Manager $size[0] $size[1]
+        # Explicitly close/reopen at both sizes, including the default size.
+        if ($null -ne (Node 'route-list')) {
+            Invoke-Name '路线库'
+            Wait-Until 'density library manually closed' { $null -eq (Node 'route-list') }
+        }
+        Invoke-Name '路线库'
+        Need-Node 'route-list' | Out-Null
+        Reveal-ListItem 'route-list' 'route-Compact_00'
+        Reveal-ListItem 'points' 'point-0'
+        $label = "compact-lists-$($size[0])x$($size[1])"
+        $metrics = [ordered]@{
+            label = $label; width = $size[0]; height = $size[1]; dpi = [int]((Scale) * 96)
+            routes = Measure-CompactList 'route-list' '^route-' 48 27
+            points = Measure-CompactList 'points' '^point-\d+$' 36 120
+            point100AccessibleName = $hundredName
+        }
+        # The top rows include the long title/hotkey, invalid route and long point.
+        foreach ($id in @('route-Compact_00', 'route-Compact_01')) {
+            if (-not (In-Bounds (Need-Node $id) (Need-Node 'route-list').Current.BoundingRectangle)) { throw "Stress route not fully visible: $id" }
+        }
+        if (-not (In-Bounds (Need-Node 'point-0') (Need-Node 'points').Current.BoundingRectangle)) { throw 'Long point not fully visible' }
+        [IO.File]::WriteAllText((Join-Path $appRoot ($label + '-list-metrics.json')), ($metrics | ConvertTo-Json -Depth 6), $utf8)
+        Write-Output ($metrics | ConvertTo-Json -Depth 6 -Compress)
+        Assert-Layout $label
+        Capture $label
+    }
+    Assert-PointSelection 99 '密度点位 100'
+    Assert-PointMoveState $true $true
+    if ([Math]::Abs((Need-Node 'point-99').Current.BoundingRectangle.Height / (Scale) - 36) -gt 1) { throw 'Three-digit point row grew' }
+    Assert-PointSelection 0 $longPoint
+    Assert-PointMoveState $false $true
+    Invoke-Name '下移'
+    if (-not (Need-Node 'point-1').Current.Name.Contains($longPoint)) { throw 'Moving first point down lost its name/order' }
+    Assert-PointMoveState $true $true
+    Invoke-Name '上移'
+    if (-not (Need-Node 'point-0').Current.Name.Contains($longPoint)) { throw 'Moving point back up did not restore order' }
+    Assert-PointMoveState $false $true
+    Assert-PointSelection 119 '密度点位 120'
+    Assert-PointMoveState $true $false
+    Invoke-Name '新增点位'
+    Need-Node 'point-120' | Out-Null
+    Assert-PointMoveState $true $false
+    Invoke-Name '删除点位'
+    Wait-Until 'added point removed' { $null -eq (Node 'point-120') }
+    Assert-PointSelection 119 '密度点位 120'
+    Assert-PointMoveState $true $false
+    [IO.File]::WriteAllText((Join-Path $appRoot 'compact-list-interactions.json'), (@{
+        point100AccessibleName = $hundredName; switchedPoints = @(100, 1, 120)
+        firstMoveUpDisabled = $true; lastMoveDownDisabled = $true
+        reorderRoundtrip = $true; addDeleteRoundtrip = $true; finalPointCount = 120
+    } | ConvertTo-Json), $utf8)
+    # Save only this owned fixture so the following original draft check stays clean.
+    Invoke-Name '保存'
+    if ($null -ne (Named '备份并保存')) { Invoke-Name '备份并保存' }
+    Wait-Ready
+
     Open-Route 'Zero'
     Invoke-Name '新建路线'
     $stem = Need-Node 'stem'
@@ -319,7 +465,7 @@ try {
     Assert-Layout 'draft-missing-target-compact' $true
     Reveal-Property 'process'
     if (Test-Path -LiteralPath (Join-Path $routes 'DraftDensity.yaml')) { throw 'Creating a draft unexpectedly wrote a route file' }
-    Write-Output 'Passed: empty welcome/library, long route/point/file names, default and compact auto/manual library layouts, bounded properties/title visibility, file disclosure, form/YAML roundtrip, zero points, complete long validation error in a single-line status bar, and missing-target draft guidance. No playback requested.'
+    Write-Output 'Passed: empty welcome/library, long route/point/file names, default and compact auto/manual library layouts, bounded properties/title visibility, file disclosure, form/YAML roundtrip, zero points, complete long validation error in a single-line status bar, 120-point/27-route density at 1280x900 and 900x640 (48/36 DIP rows, 2 DIP gaps, long names/errors/hotkey), point 100 accessible name/action count, point selection, first/last move states, reorder/add/delete roundtrips, and missing-target draft guidance. No playback requested.'
 } catch {
     if ($null -ne $root) {
         try {
