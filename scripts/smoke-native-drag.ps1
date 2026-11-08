@@ -79,13 +79,21 @@ using System.Windows.Forms;
 using System.Drawing;
 public class DragSurface : Form {
  readonly string output;
+ Point pressed;
+ bool dragging;
  public DragSurface(string title,string path) {
   output=path; Text=title; StartPosition=FormStartPosition.Manual; Location=new Point(40,40); ClientSize=new Size(800,480); TopMost=true; BackColor=Color.FromArgb(33,40,48);
  }
  void Record(string kind, MouseEventArgs e) { File.AppendAllText(output,DateTime.UtcNow.Ticks+","+kind+","+e.X+","+e.Y+","+(int)e.Button+Environment.NewLine); }
- protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Record("down",e); }
+ protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); pressed=e.Location; dragging=false; Record("down",e); }
  protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); Record("up",e); }
- protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if(e.Button==MouseButtons.Left) Record("move",e); }
+ protected override void OnMouseMove(MouseEventArgs e) {
+  base.OnMouseMove(e);
+  if(e.Button!=MouseButtons.Left) return;
+  int dx=e.X-pressed.X, dy=e.Y-pressed.Y;
+  if(!dragging && dx*dx+dy*dy>=64) { dragging=true; Record("drag_start",e); }
+  Record("move",e);
+ }
 }
 "@
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -113,7 +121,7 @@ $form.add_Shown({ [IO.File]::WriteAllText($Ready, [string]$form.Handle); $form.A
         $route = @{format='route/v1'; name=$Name; target=@{title=$targetTitle};points=@(@{id=1;name='isolated';operations=@($Operations)})}
         Put "routes\_cache\$Name.json" ($route | ConvertTo-Json -Depth 15)
     }
-    function Verify-Drag([string]$Name, [int]$Before, [bool]$Identical=$false) {
+    function Verify-Drag([string]$Name, [int]$Before, [bool]$Identical=$false, [int]$PreDistance=16, [int]$PreDelay=80, [int]$ExpectedX=639, [int]$ExpectedY=383) {
         Wait-For "$Name mouse up" { @(Events).Count -gt $Before -and @(Events)[-1].kind -eq 'up' }
         $all = @(Events)
         $ev = @($all | Select-Object -Skip $Before)
@@ -121,27 +129,64 @@ $form.add_Shown({ [IO.File]::WriteAllText($Ready, [string]$form.Handle); $form.A
         $up = @($ev | Where-Object kind -eq up)
         Assert ($down.Count -eq 1 -and $up.Count -eq 1) "$Name expected one left down/up"
         Assert ($down[0].button -eq 1048576 -and $up[0].button -eq 1048576) "$Name expected left button"
-        $endX = if ($Identical) {160} else {639}
-        $endY = if ($Identical) {96} else {383}
+        $endX = if ($Identical) {160} else {$ExpectedX}
+        $endY = if ($Identical) {96} else {$ExpectedY}
         Assert ($down[0].x -eq 160 -and $down[0].y -eq 96) "$Name wrong start"
         Assert ($up[0].x -eq $endX -and $up[0].y -eq $endY) "$Name wrong endpoint"
+        $start = @($ev | Where-Object kind -eq drag_start)
+        if ($Identical) {
+            Assert ($start.Count -eq 0) "$Name unexpectedly started dragging"
+        } elseif ($PreDistance -ge 8) {
+            Assert ($start.Count -eq 1) "$Name did not cross the simulated map drag threshold"
+            $startDistance = [math]::Sqrt([math]::Pow($start[0].x-160,2)+[math]::Pow($start[0].y-96,2))
+            Assert ($startDistance -le ($PreDistance+1)) "$Name map drag began only during main movement"
+            $length = [math]::Sqrt([math]::Pow($endX-160,2)+[math]::Pow($endY-96,2))
+            $ratio = [math]::Min($PreDistance/$length,1)
+            $preX = [int][math]::Round(160+($endX-160)*$ratio)
+            $preY = [int][math]::Round(96+($endY-96)*$ratio)
+            $preEvents = @($ev | Where-Object { $_.kind -eq 'move' -and $_.x -eq $preX -and $_.y -eq $preY })
+            Assert ($preEvents.Count -gt 0) "$Name missing predrag endpoint"
+            $pressWait = ($preEvents[0].ticks-$down[0].ticks)/10000
+            Assert ($pressWait -ge 40) "$Name did not wait for the initial press"
+            $afterPre = @($ev | Where-Object { $_.ticks -gt $preEvents[0].ticks -and $_.kind -in @('move','up') -and ($_.x -ne $preX -or $_.y -ne $preY -or $_.kind -eq 'up') })
+            Assert ($afterPre.Count -gt 0) "$Name missing movement or release after predrag"
+            $settleMs = ($afterPre[0].ticks-$preEvents[0].ticks)/10000
+            Assert ($settleMs -ge ($PreDelay-20)) "$Name continued before the predrag pause elapsed: $settleMs ms"
+        }
         Assert (([NativeDragSmoke]::GetAsyncKeyState(1) -band 0x8000) -eq 0) "$Name left remains down"
         $ev | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $fixture "$Name.events.json") -Encoding utf8
         $result = [pscustomobject]@{name=$Name;downUpMs=[math]::Round(($up[0].ticks-$down[0].ticks)/10000,2);moveEvents=@($ev | Where-Object kind -eq move).Count;leftReleased=$true;endX=$up[0].x;endY=$up[0].y}
         $results.Add($result)
         return $result
     }
-    foreach ($case in @(@{name='runner-default';speed=$null},@{name='runner-speed0';speed=0},@{name='runner-speed40';speed=40},@{name='runner-identical';speed=15})) {
+    foreach ($case in @(
+        @{name='runner-default';speed=$null},
+        @{name='runner-speed0';speed=0},
+        @{name='runner-speed40';speed=40},
+        @{name='runner-identical';speed=15;identical=$true},
+        @{name='runner-disabled';speed=0;distance=0},
+        @{name='runner-short';speed=0;short=$true},
+        @{name='runner-custom';speed=0;distance=32;delay=180;preSpeed=20},
+        @{name='runner-zero-delay';speed=0;delay=0}
+    )) {
         $op = @{type='drag_native';from=@(0.2,0.2);to=@(0.8,0.8)}
         if ($null -ne $case.speed) { $op.speed=$case.speed }
-        if ($case.name -eq 'runner-identical') { $op.to=@(0.2,0.2) }
+        if ($case.identical) { $op.to=@(0.2,0.2) }
+        if ($case.short) { $op.to=@(0.21,0.21) }
+        if ($case.ContainsKey('distance')) { $op.pre_drag_distance=$case.distance }
+        if ($case.ContainsKey('delay')) { $op.pre_drag_delay=$case.delay }
+        if ($case.ContainsKey('preSpeed')) { $op.pre_drag_speed=$case.preSpeed }
+        $expectedDistance = if ($case.ContainsKey('distance')) {$case.distance} else {16}
+        $expectedDelay = if ($case.ContainsKey('delay')) {$case.delay} else {80}
         Route $case.name @($op)
         Foreground-Target
         $before = @(Events).Count
         $p = Launch $AutoHotkey @('/ErrorStdOut',('"'+(Join-Path $fixture 'ahk\runner.ahk')+'"'),('"'+(Join-Path $fixture "routes\_cache\$($case.name).json")+'"'),'--stop','^!+F24') $case.name
         Wait-For "$($case.name) exit" { $p.HasExited } 20000
         Assert ($p.ExitCode -eq 0) "$($case.name) runner failed: $($p.ExitCode)"
-        $null = Verify-Drag $case.name $before ($case.name -eq 'runner-identical')
+        $expectedX = if ($case.short) {168} else {639}
+        $expectedY = if ($case.short) {101} else {383}
+        $null = Verify-Drag $case.name $before ([bool]$case.identical) $expectedDistance $expectedDelay $expectedX $expectedY
         Start-Sleep -Milliseconds 1100 # runner log names have second precision; preserve each case separately.
     }
     $fast = $results | Where-Object name -eq runner-speed0
@@ -175,20 +220,63 @@ EXE_StopFlag := true
 EXE_ExecuteOp(Map("type","drag_native","from",[0.2,0.2],"to",[0.8,0.8],"speed",0),client)
 report["earlyStopRestoresInput"] := A_SendMode = "Input"
 EXE_StopFlag := false
-report["exceptionPathCoverage"] := "Not induced; reviewed nested finally only"
-StopOnHold() {
-    if GetKeyState("LButton") {
-        SetTimer(StopOnHold,0)
+stopStage := "", stopOffset := 0, stopTriggered := false
+StopAtStage() {
+    global stopStage, stopOffset, stopTriggered
+    recent := SubStr(FileRead(EXE_LogFile, "UTF-8"), stopOffset + 1)
+    if RegExMatch(recent, "s).*drag_native stage=(\w+)", &match) && match[1] = stopStage {
+        SetTimer(StopAtStage, 0)
+        stopTriggered := true
         EXE_StopAllHandler()
     }
 }
-SetTimer(StopOnHold,10)
-ok := EXE_RunRoute(route)
-SetTimer(StopOnHold,0)
-report["stopRouteReturnsFalse"] := !ok
-report["stopLeftReleased"] := !GetKeyState("LButton")
-report["stopRestoresInput"] := A_SendMode = "Input"
-report["stopClearsRunning"] := !EXE_Running
+stopCases := Map()
+for wanted in ["press_wait", "pre_move", "pre_wait", "main_move"] {
+    stopStage := wanted
+    stopTriggered := false
+    stopOffset := StrLen(FileRead(EXE_LogFile, "UTF-8"))
+    route["name"] := "stop-" wanted
+    op := route["points"][1]["operations"][1]
+    op["pre_drag_distance"] := 160
+    op["pre_drag_speed"] := 40
+    op["pre_drag_delay"] := 400
+    SetTimer(StopAtStage, 10)
+    ok := EXE_RunRoute(route)
+    SetTimer(StopAtStage, 0)
+    recent := SubStr(FileRead(EXE_LogFile, "UTF-8"), stopOffset + 1)
+    stopCases[wanted] := Map(
+        "triggered", stopTriggered,
+        "returnsFalse", !ok,
+        "leftReleased", !GetKeyState("LButton"),
+        "restoresInput", A_SendMode = "Input",
+        "clearsRunning", !EXE_Running,
+        "correctStage", InStr(recent, "stopped stage=" wanted) > 0,
+        "skipsNextAction", InStr(recent, "STOP at point#1 op#2") > 0 && !InStr(recent, "op key {F23}")
+    )
+}
+report["stopCases"] := stopCases
+; A logging failure after mouse-down is a real exception path through cleanup.
+savedLogFile := EXE_LogFile
+BreakLogOnHold() {
+    global EXE_LogFile
+    if GetKeyState("LButton") {
+        SetTimer(BreakLogOnHold, 0)
+        EXE_LogFile := A_ScriptDir ; FileAppend cannot write to a directory.
+    }
+}
+caught := false
+SetTimer(BreakLogOnHold, 10)
+try {
+    EXE_ExecuteOp(Map("type", "drag_native", "from", [0.2,0.2], "to", [0.8,0.8]), client)
+} catch {
+    caught := true
+} finally {
+    SetTimer(BreakLogOnHold, 0)
+    EXE_LogFile := savedLogFile
+}
+report["exceptionCaught"] := caught
+report["exceptionLeftReleased"] := !GetKeyState("LButton")
+report["exceptionRestoresInput"] := A_SendMode = "Input"
 FileAppend(JSON.stringify(report),A_ScriptDir "\harness-result.json","UTF-8")
 ExitApp(0)
 '@
@@ -198,7 +286,12 @@ ExitApp(0)
     Wait-For 'deterministic executor harness exit' { $harness.HasExited } 20000
     Assert ($harness.ExitCode -eq 0) 'Harness failed: inspect harness.stderr.txt and stdout'
     $harnessReport = [IO.File]::ReadAllText((Join-Path $fixture 'harness-result.json')) | ConvertFrom-Json
-    foreach ($key in @('defaultRestoresInput','restoresPlay','earlyStopRestoresInput','stopRouteReturnsFalse','stopLeftReleased','stopRestoresInput','stopClearsRunning')) { Assert $harnessReport.$key "Harness assertion failed: $key" }
+    foreach ($key in @('defaultRestoresInput','restoresPlay','earlyStopRestoresInput','exceptionCaught','exceptionLeftReleased','exceptionRestoresInput')) { Assert $harnessReport.$key "Harness assertion failed: $key" }
+    foreach ($stage in @('press_wait','pre_move','pre_wait','main_move')) {
+        foreach ($key in @('triggered','returnsFalse','leftReleased','restoresInput','clearsRunning','correctStage','skipsNextAction')) {
+            Assert $harnessReport.stopCases.$stage.$key "Harness stop assertion failed: $stage.$key"
+        }
+    }
     $harnessLog = @(Get-ChildItem -LiteralPath (Join-Path $fixture 'logs') -Filter '*.log' | Sort-Object LastWriteTime)[-1]
     $logText = [IO.File]::ReadAllText($harnessLog.FullName)
     Assert ($logText.Contains('STOP at point#1 op#2')) 'Stop did not skip the following action'

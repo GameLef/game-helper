@@ -101,22 +101,33 @@ points:
 ### drag_native 原生拖动
 
 ```yaml
-- { type: drag_native, from: [0.1, 0.1], to: [0.8, 0.8], speed: 2 }
+- type: drag_native
+  from: [0.1, 0.1]
+  to: [0.8, 0.8]
+  speed: 2
+  pre_drag_distance: 16
+  pre_drag_speed: 10
+  pre_drag_delay: 80
 ```
 
 | 字段 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `from` | 是 | - | 起点归一化坐标 |
 | `to` | 是 | - | 终点归一化坐标 |
-| `speed` | 否 | 2 | AHK 原生移动速度，0~100 的整数；0 瞬移，数值越大越慢 |
+| `speed` | 否 | 2 | AHK Event 原生移动速度，0~100 的整数；0 瞬移，数值越大越慢 |
+| `pre_drag_distance` | 否 | 16 | 预拖动距离，0~1000 的整数，单位为物理像素；0 禁用预拖动 |
+| `pre_drag_speed` | 否 | 10 | 预拖动的 AHK Event 原生移动速度，1~100 的整数，数值越大越慢 |
+| `pre_drag_delay` | 否 | 80 | 预拖动完成后的等待时间，0~5000 的整数，单位为毫秒 |
 
-执行顺序为瞬移到起点、按住左键、调用一次 `MouseMove(toX, toY, speed)`、松开左键。起终点相同也会执行按下与松开。支持公共字段 `name`、`jitter`，随机偏移分别应用于起终点。
+执行顺序为瞬移到起点、按住左键；若启用预拖动且换算后的实际路径长度非零，先可中断地等待 50 ms，再沿起点到终点的直线方向，以 `pre_drag_speed` 原生移动 `min(pre_drag_distance, 实际路径长度)` 物理像素，随后可中断地等待 `pre_drag_delay` ms；最后以 `speed` 原生移动到终点并松开左键。预拖动和主拖动使用同一次左键按住，中途不松开，也不重新按下：表现为按住后先轻微移动，再继续移动到目标。
 
-依据 [AHK MouseMove 文档](https://www.autohotkey.com/docs/v2/lib/MouseMove.htm)，`Input` 模式会忽略速度，因此此动作临时切换到 `Event` 模式，结束或异常时释放左键并恢复先前发送模式。`speed` 不是毫秒时长，实际耗时由距离、速度及 AHK 行为决定；此动作不使用 `duration`，项目执行器不拆分插值步数。
+短路径在预拖动阶段已到达终点时，不再重复执行主移动。起终点相同会跳过预拖动及其前后等待，但仍执行按下与松开。支持公共字段 `name`、`jitter`，随机偏移分别应用于起终点，预拖动方向和距离按换算与偏移后的实际路径计算。游戏实际识别拖动的阈值无法自动检测，需按目标游戏调整这些参数。
 
-急停在开始移动前及单次原生移动返回后生效，无法按现有插值循环的步长中断移动；本次移动返回后不再执行后续动作。
+依据 [AHK MouseMove 文档](https://www.autohotkey.com/docs/v2/lib/MouseMove.htm)，`Input` 模式会忽略速度，因此此动作临时切换到 `Event` 模式，结束或异常时释放左键并恢复先前发送模式。`speed` 与 `pre_drag_speed` 都不是毫秒时长，实际耗时由距离、速度及 AHK 行为决定；此动作不使用 `duration`，项目执行器不拆分原生移动的插值步数。
 
-格式继续使用 `route/v1`，旧路线无需迁移。包含 `drag_native` 的路线必须配套使用支持此类型的新版管理器与 AHK 执行脚本。
+急停可中断预拖动前的 50 ms 等待和预拖动后的等待；每次原生移动只能在调用返回后停止，无法在原生移动调用内部中断。急停后释放左键，且不再执行后续移动或动作。
+
+格式继续使用 `route/v1`，旧路线无需迁移。**旧 `drag_native` 路线省略预拖动字段时也使用上述默认值，因此默认启用预拖动。** 设置 `pre_drag_distance: 0` 可恢复原先按下后直接移动到终点的行为，此时不执行预拖动及其前后等待。管理器加载和生成执行缓存时会补齐省略字段的默认值。包含 `drag_native` 的路线必须配套使用支持这些字段的新版管理器与 AHK 执行脚本。
 
 ### wait 等待
 
@@ -139,7 +150,7 @@ YAML 是源文件，`routes/_cache/<文件 stem>.json` 是执行缓存。Rust �
 3. `target` 三字段至少一个非空
 4. `points` 必须为列表；每个点位 `id` 为正整数，不要求点位层 `pos`
 5. 操作 `type` 必须为 `click/key/press/wheel/drag/wait/drag_native` 之一，且各自必填字段存在、类型正确；点击 `pos` 和两种拖动的 `from` / `to` 必须为二元数组且数值在 0~1
-6. `jitter` ≥ 0；`clicks` ≥ 1；`press.ms` / `wait.ms` / `drag.duration` 为 ≥1 的整数值；`drag_native.speed` 为 0~100 的整数值
+6. `jitter` ≥ 0；`clicks` ≥ 1；`press.ms` / `wait.ms` / `drag.duration` 为 ≥1 的整数值；`drag_native.speed` 为 0~100 的整数值，`pre_drag_distance` 为 0~1000 的整数值，`pre_drag_speed` 为 1~100 的整数值，`pre_drag_delay` 为 0~5000 的整数值
 7. 错误信息需定位：路线级错误直接说明；点位级错误带 `points[i]`（第几个点位）与点位 id/name；操作级错误带 `points[i].operations[j]`
 
 ## 坐标换算公式

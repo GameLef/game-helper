@@ -304,11 +304,14 @@ fn drag_native_is_appended_and_uses_explicit_serde_name() {
 }
 
 #[test]
-fn drag_native_constructor_and_omitted_speed_defaults() {
+fn drag_native_constructor_and_omitted_defaults() {
     let operation = Operation::new(OpKind::DragNative, [0.25, 0.75]);
     assert_eq!(
         serde_json::to_value(&operation).unwrap(),
-        json!({"type":"drag_native", "from":[0.25,0.75], "to":[0.25,0.75], "speed":2})
+        json!({
+            "type":"drag_native", "from":[0.25,0.75], "to":[0.25,0.75], "speed":2,
+            "pre_drag_distance":16, "pre_drag_speed":10, "pre_drag_delay":80
+        })
     );
     let mut value = raw();
     value["points"][0]["operations"][6] =
@@ -317,7 +320,79 @@ fn drag_native_constructor_and_omitted_speed_defaults() {
     assert_eq!(route.points[0].operations[6], operation);
     let cache: Value = serde_json::from_str(&route.cache_json().unwrap()).unwrap();
     assert_eq!(cache["points"][0]["operations"][6]["speed"], 2);
+    assert_eq!(cache["points"][0]["operations"][6]["pre_drag_distance"], 16);
+    assert_eq!(cache["points"][0]["operations"][6]["pre_drag_speed"], 10);
+    assert_eq!(cache["points"][0]["operations"][6]["pre_drag_delay"], 80);
     assert!(cache["points"][0]["operations"][6].get("jitter").is_none());
+    assert_eq!(Route::parse(&route.yaml().unwrap()).unwrap(), route);
+    assert_eq!(Route::from_value(&cache).unwrap(), route);
+    assert_eq!(serde_json::from_value::<Route>(cache).unwrap(), route);
+}
+
+#[test]
+fn drag_native_predrag_defaults_normalize_legacy_in_memory_operations() {
+    let mut route = Route::parse(VALID).unwrap();
+    for field in ["pre_drag_distance", "pre_drag_speed", "pre_drag_delay"] {
+        route.points[0].operations[6].params.remove(field);
+    }
+    route.validate().unwrap();
+    let cache = route.cache_json().unwrap();
+    let decoded: Route = serde_json::from_str(&cache).unwrap();
+    assert_eq!(decoded, Route::parse(VALID).unwrap());
+    let yaml = route.yaml().unwrap();
+    assert_eq!(Route::parse(&yaml).unwrap(), decoded);
+}
+
+#[test]
+fn drag_native_predrag_boundaries_and_integral_floats_round_trip() {
+    for (field, min, max) in [
+        ("pre_drag_distance", 0, 1000),
+        ("pre_drag_speed", 1, 100),
+        ("pre_drag_delay", 0, 5000),
+    ] {
+        for parameter in [json!(min), json!(max), json!(min as f64), json!(max as f64)] {
+            let mut value = raw();
+            value["points"][0]["operations"][6][field] = parameter.clone();
+            let route = Route::from_value(&value).unwrap();
+            route.validate().unwrap();
+            assert_eq!(route.points[0].operations[6].params[field], parameter);
+            assert_eq!(Route::parse(&route.yaml().unwrap()).unwrap(), route);
+            let cache = route.cache_json().unwrap();
+            let cached: Value = serde_json::from_str(&cache).unwrap();
+            assert_eq!(cached["points"][0]["operations"][6][field], parameter);
+            assert_eq!(Route::from_value(&cached).unwrap(), route);
+            assert_eq!(serde_json::from_str::<Route>(&cache).unwrap(), route);
+        }
+    }
+}
+
+#[test]
+fn drag_native_rejects_predrag_ranges_types_and_fractions() {
+    for (field, min, max) in [
+        ("pre_drag_distance", 0, 1000),
+        ("pre_drag_speed", 1, 100),
+        ("pre_drag_delay", 0, 5000),
+    ] {
+        for parameter in [
+            json!(min - 1),
+            json!(max + 1),
+            json!((min - 1) as f64),
+            json!((max + 1) as f64),
+            json!(min as f64 + 0.5),
+            json!(max as f64 - 0.5),
+            Value::Null,
+            json!(true),
+            json!(false),
+            json!("10"),
+            json!([]),
+            json!({}),
+        ] {
+            rejected(
+                |value| value["points"][0]["operations"][6][field] = parameter,
+                &format!("operations[6].{field}"),
+            );
+        }
+    }
 }
 
 #[test]

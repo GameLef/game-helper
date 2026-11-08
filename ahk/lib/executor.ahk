@@ -223,39 +223,83 @@ EXE_ExecuteOp(op, client) {
             Click("Up")
             EXE_Log("  op drag " from.x "," from.y " -> " to.x "," to.y)
         case "drag_native":
-            from := EXE_ToScreen(op["from"], client, jitter)
-            to := EXE_ToScreen(op["to"], client, jitter)
-            speed := op.Has("speed") ? Integer(op["speed"]) : 2
-            previousMode := A_SendMode
-            held := false
-            try {
-                ; Input ignores MouseMove speed; use Event only for this action.
-                SendMode("Event")
-                if (EXE_StopFlag)
-                    return
-                MouseMove(from.x, from.y, 0)
-                if (EXE_StopFlag)
-                    return
-                held := true
-                Click("Down")
-                if (!EXE_StopFlag)
-                    ; One native move: stop is checked again after it returns.
-                    MouseMove(to.x, to.y, speed)
-            } finally {
-                try {
-                    if (held)
-                        Click("Up")
-                } finally {
-                    SendMode(previousMode)
-                }
-            }
-            EXE_Log("  op drag_native " from.x "," from.y " -> " to.x "," to.y " speed=" speed)
+            EXE_DragNative(op, client, jitter)
         case "wait":
             ms := Integer(op["ms"])
             EXE_Log("  op wait " ms "ms")
             EXE_Sleep(ms)
         default:
             EXE_Log("  op UNKNOWN type: " t)
+    }
+}
+
+; ---------- 原生拖动：预拖动与主移动共用一次按下/松开 ----------
+EXE_DragNative(op, client, jitter := 0) {
+    from := EXE_ToScreen(op["from"], client, jitter)
+    to := EXE_ToScreen(op["to"], client, jitter)
+    speed := op.Has("speed") ? Integer(op["speed"]) : 2
+    distance := op.Has("pre_drag_distance") ? Integer(op["pre_drag_distance"]) : 16
+    preSpeed := op.Has("pre_drag_speed") ? Integer(op["pre_drag_speed"]) : 10
+    delay := op.Has("pre_drag_delay") ? Integer(op["pre_drag_delay"]) : 80
+    dx := to.x - from.x, dy := to.y - from.y
+    length := Sqrt(dx * dx + dy * dy)
+    pre := from
+    if (distance > 0 && length > 0) {
+        ratio := Min(distance / length, 1)
+        pre := {x: Round(from.x + dx * ratio), y: Round(from.y + dy * ratio)}
+    }
+    previousMode := A_SendMode
+    held := false
+    stage := "start"
+    EXE_Log("  op drag_native " from.x "," from.y " -> " to.x "," to.y " speed=" speed
+        " pre_drag_distance=" distance " pre_drag_speed=" preSpeed " pre_drag_delay=" delay
+        " pre=" pre.x "," pre.y)
+    try {
+        ; Input ignores MouseMove speed; predrag must also use Event at speed 0.
+        SendMode("Event")
+        if (EXE_StopFlag)
+            return
+        MouseMove(from.x, from.y, 0)
+        if (EXE_StopFlag)
+            return
+        held := true
+        Click("Down")
+        if (EXE_StopFlag)
+            return
+        if (distance > 0 && length > 0) {
+            stage := "press_wait"
+            EXE_Log("    drag_native stage=" stage)
+            EXE_Sleep(50)
+            if (EXE_StopFlag)
+                return
+            stage := "pre_move"
+            EXE_Log("    drag_native stage=" stage)
+            MouseMove(pre.x, pre.y, preSpeed)
+            if (EXE_StopFlag)
+                return
+            stage := "pre_wait"
+            EXE_Log("    drag_native stage=" stage)
+            EXE_Sleep(delay)
+            if (EXE_StopFlag)
+                return
+        }
+        if (pre.x != to.x || pre.y != to.y) {
+            stage := "main_move"
+            EXE_Log("    drag_native stage=" stage)
+            ; Each native move returns before stop can skip the next stage.
+            MouseMove(to.x, to.y, speed)
+            if (EXE_StopFlag)
+                return
+        }
+        stage := "complete"
+    } finally {
+        try {
+            if (held)
+                Click("Up")
+        } finally {
+            SendMode(previousMode)
+            EXE_Log("    drag_native " (EXE_StopFlag ? "stopped" : stage = "complete" ? "completed" : "incomplete") " stage=" stage)
+        }
     }
 }
 

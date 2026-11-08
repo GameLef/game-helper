@@ -66,6 +66,9 @@ fn parameter_name(key: &str) -> &str {
         "to" => "终点 [x, y]",
         "duration" => "拖动时长（ms）",
         "speed" => "移动速度（0～100）",
+        "pre_drag_distance" => "预拖动距离（物理像素）",
+        "pre_drag_speed" => "预拖动速度（1～100）",
+        "pre_drag_delay" => "预拖动后等待（ms）",
         "jitter" => "随机偏移",
         _ => key,
     }
@@ -759,6 +762,12 @@ impl Manager {
             if operation.kind == OpKind::DragNative {
                 panel = panel
                     .child(muted("速度为整数：0 瞬移，数值越大越慢；非毫秒时长。"))
+                    .child(muted(
+                        "预拖动默认 16 物理像素、速度 10、移动后等待 80 ms；距离为 0 恢复直接拖动。",
+                    ))
+                    .child(muted(
+                        "预拖动沿起终点方向先移动一小段，全程按住左键；无法检测游戏实际拖动阈值。",
+                    ))
                     .child(muted("急停会在本次原生移动返回后停止后续动作。"));
             }
         }

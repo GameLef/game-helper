@@ -84,7 +84,10 @@ impl Operation {
             OpKind::Wheel => json!({"delta": 1}),
             OpKind::Drag => json!({"from": anchor, "to": anchor, "duration": 200}),
             OpKind::Wait => json!({"ms": 100}),
-            OpKind::DragNative => json!({"from": anchor, "to": anchor, "speed": 2}),
+            OpKind::DragNative => json!({
+                "from": anchor, "to": anchor, "speed": 2,
+                "pre_drag_distance": 16, "pre_drag_speed": 10, "pre_drag_delay": 80
+            }),
         };
         Self {
             kind,

@@ -68,6 +68,14 @@ $routePath = Join-Path $routes 'Actions.yaml'
 $fixture.name = 'Other'
 [IO.File]::WriteAllText((Join-Path $routes 'Other.yaml'), ($fixture | ConvertTo-Json -Depth 12), $utf8)
 $originalSource = [IO.File]::ReadAllText($routePath)
+# The source intentionally omits predrag fields; the form must show the defaults.
+foreach ($operation in $expected) {
+    if ($operation.type -eq 'drag_native') {
+        $operation | Add-Member pre_drag_distance 16
+        $operation | Add-Member pre_drag_speed 10
+        $operation | Add-Member pre_drag_delay 80
+    }
+}
 $manager = $null
 $root = $null
 $scope = [Windows.Automation.TreeScope]::Descendants
@@ -276,8 +284,12 @@ function Assert-FirstNames {
     }
     if ((Input-Value 'operation-0-clicks') -ne '3') { throw 'Edited click parameter lost' }
     for ($i = 0; $i -lt $expected.Count; $i++) {
-        if ($expected[$i].type -eq 'drag_native' -and (Input-Value "operation-$i-speed") -ne [string]$expected[$i].speed) {
-            throw "Native drag speed $i lost after rebuilding controls"
+        if ($expected[$i].type -eq 'drag_native') {
+            foreach ($key in @('speed','pre_drag_distance','pre_drag_speed','pre_drag_delay')) {
+                if ((Input-Value "operation-$i-$key") -ne [string]$expected[$i].$key) {
+                    throw "Native drag $key at $i lost after rebuilding controls"
+                }
+            }
         }
     }
 }
@@ -361,6 +373,15 @@ try {
                 Set-Input "operation-$index-speed" '37'
                 $operation.speed = 37
                 if ((Input-Value "operation-$index-speed") -ne '37') { throw 'New native drag speed edit was not applied' }
+                foreach ($setting in @(
+                    @{key='pre_drag_distance';default=16;edited=24},
+                    @{key='pre_drag_speed';default=10;edited=7},
+                    @{key='pre_drag_delay';default=80;edited=120}
+                )) {
+                    if ((Input-Value "operation-$index-$($setting.key)") -ne [string]$setting.default) { throw "Wrong predrag default: $($setting.key)" }
+                    Set-Input "operation-$index-$($setting.key)" ([string]$setting.edited)
+                    $operation[$setting.key] = $setting.edited
+                }
             }
         }
         $expected.Add([pscustomobject]$operation)
@@ -376,6 +397,8 @@ try {
     }
     Set-Input 'operation-0-clicks' '3'
     $expected[0].clicks = 3
+    Set-Input 'operation-6-pre_drag_distance' '0'
+    $expected[6].pre_drag_distance = 0
     Scroll-To 'operation-toggle-0' 1
     Invoke-Id 'operation-toggle-0'
     Wait-Until 'edited action collapsed before moving' { $null -eq (Node 'operation-0-name') }

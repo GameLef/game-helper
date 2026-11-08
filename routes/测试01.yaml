@@ -145,7 +145,7 @@ points:
     button: left
     clicks: 1
   - type: wait
-    ms: 1000
+    ms: 200
   - type: drag_native
     from:
     - 0.535696
@@ -153,7 +153,10 @@ points:
     to:
     - 0.4716
     - 0.537535
-    speed: 5
+    speed: 2
+    pre_drag_distance: 16
+    pre_drag_speed: 2
+    pre_drag_delay: 0
   - type: click
     name: 目标锚点
     pos:
@@ -170,3 +173,18 @@ points:
     - 0.930491
     button: left
     clicks: 1
+- id: 6
+  name: 点位 6
+  note: ''
+  operations:
+  - type: drag_native
+    from:
+    - 0.535696
+    - 0.868397
+    to:
+    - 0.4716
+    - 0.537535
+    speed: 2
+    pre_drag_distance: 16
+    pre_drag_speed: 2
+    pre_drag_delay: 20

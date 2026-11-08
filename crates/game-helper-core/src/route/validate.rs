@@ -185,6 +185,19 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
                     "{location}.speed: 必须是 0~100 的整数"
                 );
                 params.insert("speed".into(), speed);
+                for (field, default, min, max) in [
+                    ("pre_drag_distance", 16, 0.0, 1000.0),
+                    ("pre_drag_speed", 10, 1.0, 100.0),
+                    ("pre_drag_delay", 80, 0.0, 5000.0),
+                ] {
+                    let value = raw.get(field).cloned().unwrap_or(json!(default));
+                    let value = number(&value, &format!("{location}.{field}"), true, Some(min))?;
+                    ensure!(
+                        value.as_f64().is_some_and(|n| n <= max),
+                        "{location}.{field}: 必须是 {min}~{max} 的整数"
+                    );
+                    params.insert(field.into(), value);
+                }
             }
         }
         OpKind::Wait => {
