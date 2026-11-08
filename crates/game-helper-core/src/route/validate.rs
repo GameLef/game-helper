@@ -108,7 +108,7 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
         .as_str()
         .and_then(|s| OpKind::ALL.into_iter().find(|k| k.label() == s))
         .with_context(|| {
-            format!("{location}: 未知操作类型（支持 click/key/press/wheel/drag/wait）")
+            format!("{location}: 未知操作类型（支持 click/key/press/wheel/drag/wait/drag_native）")
         })?;
     let name = match raw.get("name") {
         None => String::new(),
@@ -164,18 +164,28 @@ fn operation(raw: &Value, location: &str) -> Result<Operation> {
             ensure!(delta.as_f64() != Some(0.0), "{location}: delta 不能为 0");
             params.insert("delta".into(), delta);
         }
-        OpKind::Drag => {
+        OpKind::Drag | OpKind::DragNative => {
             for field in ["from", "to"] {
                 params.insert(
                     field.into(),
                     json!(pair(&raw[field], &format!("{location}.{field}"))?),
                 );
             }
-            let duration = raw.get("duration").cloned().unwrap_or(json!(200));
-            params.insert(
-                "duration".into(),
-                number(&duration, &format!("{location}.duration"), true, Some(1.0))?,
-            );
+            if kind == OpKind::Drag {
+                let duration = raw.get("duration").cloned().unwrap_or(json!(200));
+                params.insert(
+                    "duration".into(),
+                    number(&duration, &format!("{location}.duration"), true, Some(1.0))?,
+                );
+            } else {
+                let speed = raw.get("speed").cloned().unwrap_or(json!(2));
+                let speed = number(&speed, &format!("{location}.speed"), true, Some(0.0))?;
+                ensure!(
+                    speed.as_f64().is_some_and(|n| n <= 100.0),
+                    "{location}.speed: 必须是 0~100 的整数"
+                );
+                params.insert("speed".into(), speed);
+            }
         }
         OpKind::Wait => {
             params.insert(

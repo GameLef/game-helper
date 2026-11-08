@@ -173,7 +173,7 @@ EXE_RunRoute(route, startAt := 1, only := 0) {
 EXE_ExecuteOp(op, client) {
     static typeName := Map(
         "click", "点击", "key", "按键", "press", "按住",
-        "wheel", "滚轮", "drag", "拖拽", "wait", "等待"
+        "wheel", "滚轮", "drag", "拖拽", "wait", "等待", "drag_native", "原生拖动"
     )
     t := op["type"]
     jitter := op.Has("jitter") ? Integer(op["jitter"]) : 0
@@ -222,6 +222,34 @@ EXE_ExecuteOp(op, client) {
             }
             Click("Up")
             EXE_Log("  op drag " from.x "," from.y " -> " to.x "," to.y)
+        case "drag_native":
+            from := EXE_ToScreen(op["from"], client, jitter)
+            to := EXE_ToScreen(op["to"], client, jitter)
+            speed := op.Has("speed") ? Integer(op["speed"]) : 2
+            previousMode := A_SendMode
+            held := false
+            try {
+                ; Input ignores MouseMove speed; use Event only for this action.
+                SendMode("Event")
+                if (EXE_StopFlag)
+                    return
+                MouseMove(from.x, from.y, 0)
+                if (EXE_StopFlag)
+                    return
+                held := true
+                Click("Down")
+                if (!EXE_StopFlag)
+                    ; One native move: stop is checked again after it returns.
+                    MouseMove(to.x, to.y, speed)
+            } finally {
+                try {
+                    if (held)
+                        Click("Up")
+                } finally {
+                    SendMode(previousMode)
+                }
+            }
+            EXE_Log("  op drag_native " from.x "," from.y " -> " to.x "," to.y " speed=" speed)
         case "wait":
             ms := Integer(op["ms"])
             EXE_Log("  op wait " ms "ms")

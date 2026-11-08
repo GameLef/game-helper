@@ -16,6 +16,7 @@ points:
       - {type: wheel, delta: -5}
       - {type: drag, from: [0.1, 0.1], to: [0.2, 0.2], duration: 150}
       - {type: wait, ms: 100}
+      - {type: drag_native, from: [0.3, 0.4], to: [0.7, 0.8], speed: 12, jitter: 2}
   - id: 2
     name: 第二个点
     pos: [0.1, 0.9]
@@ -38,7 +39,7 @@ fn load_valid() {
     assert_eq!(route.name, "测试路线");
     assert_eq!(route.points.len(), 2);
     assert_eq!(route.points[0].action_position(), [0.9, 0.9]);
-    assert_eq!(route.points[0].operations.len(), 6);
+    assert_eq!(route.points[0].operations.len(), 7);
     assert_eq!(route.points[0].operations[0].kind, OpKind::Click);
 }
 #[test]
@@ -277,6 +278,155 @@ fn new_actions_use_existing_spatial_coordinates_or_window_center() {
     assert_eq!(point.action_position(), [0.8, 0.9]);
 }
 #[test]
+fn drag_native_is_appended_and_uses_explicit_serde_name() {
+    assert_eq!(
+        OpKind::ALL,
+        [
+            OpKind::Click,
+            OpKind::Key,
+            OpKind::Press,
+            OpKind::Wheel,
+            OpKind::Drag,
+            OpKind::Wait,
+            OpKind::DragNative,
+        ]
+    );
+    assert_eq!(OpKind::DragNative.label(), "drag_native");
+    assert_eq!(
+        serde_json::to_value(OpKind::DragNative).unwrap(),
+        json!("drag_native")
+    );
+    assert_eq!(
+        serde_json::from_value::<OpKind>(json!("drag_native")).unwrap(),
+        OpKind::DragNative
+    );
+    assert!(serde_json::from_value::<OpKind>(json!("dragnative")).is_err());
+}
+
+#[test]
+fn drag_native_constructor_and_omitted_speed_defaults() {
+    let operation = Operation::new(OpKind::DragNative, [0.25, 0.75]);
+    assert_eq!(
+        serde_json::to_value(&operation).unwrap(),
+        json!({"type":"drag_native", "from":[0.25,0.75], "to":[0.25,0.75], "speed":2})
+    );
+    let mut value = raw();
+    value["points"][0]["operations"][6] =
+        json!({"type":"drag_native", "from":[0.25,0.75], "to":[0.25,0.75], "jitter":0});
+    let route = Route::from_value(&value).unwrap();
+    assert_eq!(route.points[0].operations[6], operation);
+    let cache: Value = serde_json::from_str(&route.cache_json().unwrap()).unwrap();
+    assert_eq!(cache["points"][0]["operations"][6]["speed"], 2);
+    assert!(cache["points"][0]["operations"][6].get("jitter").is_none());
+}
+
+#[test]
+fn drag_native_speed_boundaries_and_integral_floats() {
+    for speed in [json!(0), json!(100), json!(0.0), json!(2.0), json!(100.0)] {
+        let mut value = raw();
+        value["points"][0]["operations"][6]["speed"] = speed.clone();
+        let route = Route::from_value(&value).unwrap();
+        assert_eq!(route.points[0].operations[6].params["speed"], speed);
+        let cache: Value = serde_json::from_str(&route.cache_json().unwrap()).unwrap();
+        assert_eq!(cache["points"][0]["operations"][6]["speed"], speed);
+        assert_eq!(Route::parse(&route.yaml().unwrap()).unwrap(), route);
+    }
+}
+
+#[test]
+fn drag_native_rejects_speed_ranges_types_and_fractions() {
+    for speed in [
+        json!(-1),
+        json!(101),
+        json!(-1.0),
+        json!(101.0),
+        json!(0.5),
+        json!(99.5),
+        Value::Null,
+        json!(true),
+        json!(false),
+        json!("2"),
+        json!([]),
+        json!({}),
+    ] {
+        rejected(
+            |value| value["points"][0]["operations"][6]["speed"] = speed,
+            "operations[6].speed",
+        );
+    }
+}
+
+#[test]
+fn drag_native_coordinates_accept_boundaries_and_reject_malformed_pairs() {
+    let mut value = raw();
+    value["points"][0]["operations"][6]["from"] = json!([0, 1]);
+    value["points"][0]["operations"][6]["to"] = json!([1, 0]);
+    let route = Route::from_value(&value).unwrap();
+    assert_eq!(
+        route.points[0].operations[6].params["from"],
+        json!([0.0, 1.0])
+    );
+    assert_eq!(
+        route.points[0].operations[6].params["to"],
+        json!([1.0, 0.0])
+    );
+    for field in ["from", "to"] {
+        for pair in [
+            json!([-0.01, 0.5]),
+            json!([0.5, -0.01]),
+            json!([1.01, 0.5]),
+            json!([0.5, 1.01]),
+            json!([true, 0.5]),
+            json!([0.5, "1"]),
+            json!([0.5, null]),
+            json!([]),
+            json!([0.5]),
+            json!([0.1, 0.2, 0.3]),
+            json!("0,1"),
+            json!({}),
+            Value::Null,
+        ] {
+            rejected(
+                |value| value["points"][0]["operations"][6][field] = pair,
+                &format!("operations[6].{field}"),
+            );
+        }
+        rejected(
+            |value| {
+                value["points"][0]["operations"][6]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+            },
+            &format!("operations[6].{field}"),
+        );
+    }
+}
+
+#[test]
+fn native_drag_position_is_used_for_new_spatial_actions() {
+    let mut point = Point::new(1);
+    point
+        .operations
+        .push(Operation::new(OpKind::Wait, [0.0, 0.0]));
+    point
+        .operations
+        .push(Operation::new(OpKind::DragNative, [0.2, 0.3]));
+    point.operations[1]
+        .params
+        .insert("to".into(), json!([0.9, 0.8]));
+    point
+        .operations
+        .push(Operation::new(OpKind::Click, [0.7, 0.6]));
+    assert_eq!(point.action_position(), [0.2, 0.3]);
+    let added = Operation::new(OpKind::DragNative, point.action_position());
+    assert_eq!(added.params["from"], json!([0.2, 0.3]));
+    assert_eq!(added.params["to"], json!([0.2, 0.3]));
+    point.operations.remove(1);
+    assert_eq!(point.action_position(), [0.7, 0.6]);
+}
+
+#[test]
 fn malformed_structures_rejected_and_list_order_retained() {
     rejected(|v| v["points"] = json!({}), "points");
     rejected(
@@ -328,7 +478,7 @@ fn operation_names_default_empty_for_new_and_legacy_actions() {
 }
 
 #[test]
-fn names_and_parameters_round_trip_for_all_six_action_kinds() {
+fn names_and_parameters_round_trip_for_all_action_kinds() {
     let names = [
         "中文动作 🦀",
         "  引号 '和\"  ",
@@ -336,7 +486,9 @@ fn names_and_parameters_round_trip_for_all_six_action_kinds() {
         "",
         "重复名称",
         "重复名称",
+        "原生拖动 🖱️",
     ];
+    assert_eq!(names.len(), OpKind::ALL.len());
     let baseline = Route::parse(VALID).unwrap();
     let mut value = raw();
     for (operation, name) in value["points"][0]["operations"]

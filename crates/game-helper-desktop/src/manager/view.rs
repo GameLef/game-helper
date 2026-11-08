@@ -50,6 +50,7 @@ fn op_name(kind: OpKind) -> &'static str {
         OpKind::Wheel => "滚轮",
         OpKind::Drag => "拖动",
         OpKind::Wait => "等待",
+        OpKind::DragNative => "原生拖动",
     }
 }
 fn parameter_name(key: &str) -> &str {
@@ -64,6 +65,7 @@ fn parameter_name(key: &str) -> &str {
         "from" => "起点 [x, y]",
         "to" => "终点 [x, y]",
         "duration" => "拖动时长（ms）",
+        "speed" => "移动速度（0～100）",
         "jitter" => "随机偏移",
         _ => key,
     }
@@ -754,6 +756,11 @@ impl Manager {
                 );
             }
             panel = panel.child(fields);
+            if operation.kind == OpKind::DragNative {
+                panel = panel
+                    .child(muted("速度为整数：0 瞬移，数值越大越慢；非毫秒时长。"))
+                    .child(muted("急停会在本次原生移动返回后停止后续动作。"));
+            }
         }
         panel
     }

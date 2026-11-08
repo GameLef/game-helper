@@ -36,7 +36,7 @@ points:
 | `name` | string | 动作显示名，可为空或重复；缺失时为空字符串，结构化序列化时省略空名称 |
 | `jitter` | number | 随机抖动像素半径（执行时对换算后的物理坐标加 ±jitter 随机偏移），默认 0 |
 
-`name` 与 `type` 同级，六类操作均支持。提供名称时必须为字符串，`null`、数值、布尔值、数组和对象均无效，错误定位到 `points[i].operations[j].name`。名称原样保留于 YAML 和 JSON 执行缓存，AHK 忽略该显示元数据；格式仍为 `route/v1`，旧路线无需迁移。
+`name` 与 `type` 同级，所有操作均支持。提供名称时必须为字符串，`null`、数值、布尔值、数组和对象均无效，错误定位到 `points[i].operations[j].name`。名称原样保留于 YAML 和 JSON 执行缓存，AHK 忽略该显示元数据；格式仍为 `route/v1`，旧路线无需迁移。
 
 各类型专有字段：
 
@@ -96,6 +96,28 @@ points:
 | `to` | 是 | - | 终点归一化坐标 |
 | `duration` | 否 | 200 | 拖拽时长（毫秒） |
 
+现有 `drag` 沿直线分步插值，以 `duration` 控制计划拖动时长。
+
+### drag_native 原生拖动
+
+```yaml
+- { type: drag_native, from: [0.1, 0.1], to: [0.8, 0.8], speed: 2 }
+```
+
+| 字段 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `from` | 是 | - | 起点归一化坐标 |
+| `to` | 是 | - | 终点归一化坐标 |
+| `speed` | 否 | 2 | AHK 原生移动速度，0~100 的整数；0 瞬移，数值越大越慢 |
+
+执行顺序为瞬移到起点、按住左键、调用一次 `MouseMove(toX, toY, speed)`、松开左键。起终点相同也会执行按下与松开。支持公共字段 `name`、`jitter`，随机偏移分别应用于起终点。
+
+依据 [AHK MouseMove 文档](https://www.autohotkey.com/docs/v2/lib/MouseMove.htm)，`Input` 模式会忽略速度，因此此动作临时切换到 `Event` 模式，结束或异常时释放左键并恢复先前发送模式。`speed` 不是毫秒时长，实际耗时由距离、速度及 AHK 行为决定；此动作不使用 `duration`，项目执行器不拆分插值步数。
+
+急停在开始移动前及单次原生移动返回后生效，无法按现有插值循环的步长中断移动；本次移动返回后不再执行后续动作。
+
+格式继续使用 `route/v1`，旧路线无需迁移。包含 `drag_native` 的路线必须配套使用支持此类型的新版管理器与 AHK 执行脚本。
+
 ### wait 等待
 
 ```yaml
@@ -116,8 +138,8 @@ YAML 是源文件，`routes/_cache/<文件 stem>.json` 是执行缓存。Rust �
 2. `name` 必须为非空字符串
 3. `target` 三字段至少一个非空
 4. `points` 必须为列表；每个点位 `id` 为正整数，不要求点位层 `pos`
-5. 操作 `type` 必须为六种之一，且各自必填字段存在、类型正确；点击 `pos` 和拖动 `from` / `to` 必须为二元数组且数值在 0~1
-6. `jitter` ≥ 0；`clicks` ≥ 1；`press.ms` / `wait.ms` ≥ 1
+5. 操作 `type` 必须为 `click/key/press/wheel/drag/wait/drag_native` 之一，且各自必填字段存在、类型正确；点击 `pos` 和两种拖动的 `from` / `to` 必须为二元数组且数值在 0~1
+6. `jitter` ≥ 0；`clicks` ≥ 1；`press.ms` / `wait.ms` / `drag.duration` 为 ≥1 的整数值；`drag_native.speed` 为 0~100 的整数值
 7. 错误信息需定位：路线级错误直接说明；点位级错误带 `points[i]`（第几个点位）与点位 id/name；操作级错误带 `points[i].operations[j]`
 
 ## 坐标换算公式

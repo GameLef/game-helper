@@ -38,7 +38,7 @@ $routes = Join-Path $appRoot 'routes'
 $utf8 = [Text.UTF8Encoding]::new($false)
 [IO.File]::WriteAllText((Join-Path $appRoot 'ahk\daemon.ahk'), '; Inert action smoke fixture. Never executed.', $utf8)
 [IO.File]::WriteAllText((Join-Path $appRoot 'config.json'), '{"routesDir":"routes","autoStartDaemon":false,"autoReloadOnSave":false,"hotkeys":{"stopAll":"F12","bindings":[]}}', $utf8)
-$kinds = @('click', 'key', 'press', 'wheel', 'drag', 'wait')
+$kinds = @('click', 'key', 'press', 'wheel', 'drag', 'wait', 'drag_native')
 $expected = [Collections.Generic.List[object]]::new()
 for ($i = 0; $i -lt 36; $i++) {
     $kind = $kinds[$i % $kinds.Count]
@@ -50,6 +50,7 @@ for ($i = 0; $i -lt 36; $i++) {
         'wheel' { $operation.delta = -5 }
         'drag' { $operation.from = @(0.1, 0.1); $operation.to = @(0.2, 0.2); $operation.duration = 150 }
         'wait' { $operation.ms = 100 }
+        'drag_native' { $operation.from = @(0.3, 0.4); $operation.to = @(0.7, 0.8); $operation.speed = 12; $operation.jitter = 2 }
     }
     $expected.Add([pscustomobject]$operation)
 }
@@ -270,10 +271,15 @@ function Assert-Cache {
     }
 }
 function Assert-FirstNames {
-    for ($i = 0; $i -lt 6; $i++) {
+    for ($i = 0; $i -lt $kinds.Count; $i++) {
         if ((Input-Value "operation-$i-name") -cne $expected[$i].name) { throw "Action name $i lost after rebuilding controls" }
     }
     if ((Input-Value 'operation-0-clicks') -ne '3') { throw 'Edited click parameter lost' }
+    for ($i = 0; $i -lt $expected.Count; $i++) {
+        if ($expected[$i].type -eq 'drag_native' -and (Input-Value "operation-$i-speed") -ne [string]$expected[$i].speed) {
+            throw "Native drag speed $i lost after rebuilding controls"
+        }
+    }
 }
 function Action-Button([string]$Prefix, [int]$Number) {
     Scroll-To ('operation-toggle-' + ($Number - 1)) 1
@@ -349,6 +355,13 @@ try {
             'wheel' { $operation.delta = 1 }
             'drag' { $operation.from = @(0.123456789, 0.876543219); $operation.to = @(0.123456789, 0.876543219); $operation.duration = 200 }
             'wait' { $operation.ms = 100 }
+            'drag_native' {
+                $operation.from = @(0.123456789, 0.876543219); $operation.to = @(0.123456789, 0.876543219); $operation.speed = 2
+                if ((Input-Value "operation-$index-speed") -ne '2') { throw 'New native drag must default to speed 2' }
+                Set-Input "operation-$index-speed" '37'
+                $operation.speed = 37
+                if ((Input-Value "operation-$index-speed") -ne '37') { throw 'New native drag speed edit was not applied' }
+            }
         }
         $expected.Add([pscustomobject]$operation)
     }
@@ -356,8 +369,8 @@ try {
     Resize-Manager 1280 900
     Set-AllExpanded $true
     Scroll-To 'operation-toggle-0' 1
-    $names = @('命名动作一 "打开仓库"', "命名动作二 '地图'", '命名动作三 按住前进', '命名动作四 向下滚动', '命名动作五 拖到目标', '命名动作六 等待加载 🦀')
-    for ($i = 0; $i -lt 6; $i++) {
+    $names = @('命名动作一 "打开仓库"', "命名动作二 '地图'", '命名动作三 按住前进', '命名动作四 向下滚动', '命名动作五 拖到目标', '命名动作六 等待加载 🦀', '命名动作七 原生拖动')
+    for ($i = 0; $i -lt $kinds.Count; $i++) {
         Set-Input "operation-$i-name" $names[$i]
         $expected[$i].name = $names[$i]
     }
@@ -374,10 +387,10 @@ try {
     if ($null -ne (Node 'operation-0-name')) { throw 'Collapsed state did not follow action back upward' }
     Invoke-Id 'operation-toggle-0'
     Assert-FirstNames
-    Scroll-To 'operation-toggle-6' -1
-    Invoke-Id 'operation-toggle-6'
-    Invoke-Node (Action-Button '删除动作 ' 7)
-    $expected.RemoveAt(6)
+    Scroll-To 'operation-toggle-7' -1
+    Invoke-Id 'operation-toggle-7'
+    Invoke-Node (Action-Button '删除动作 ' 8)
+    $expected.RemoveAt(7)
     Assert-FirstNames
     Save-Route
     Assert-Cache
@@ -386,7 +399,7 @@ try {
     $source = $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, '路线 YAML 源码'))
     if ($null -eq $source) { throw 'YAML source editor missing' }
     $yaml = $source.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
-    foreach ($prefix in @('命名动作一', '命名动作二', '命名动作三', '命名动作四', '命名动作五', '命名动作六')) {
+    foreach ($prefix in @('命名动作一', '命名动作二', '命名动作三', '命名动作四', '命名动作五', '命名动作六', '命名动作七')) {
         if (-not $yaml.Contains($prefix)) { throw "Named action missing from YAML: $prefix" }
     }
     Invoke-Name '点位编辑'
@@ -426,7 +439,7 @@ try {
     Set-AllExpanded $true
     Assert-FirstNames
     Assert-Cache
-    Write-Output 'Passed: 36 mixed actions, clean disclosure controls, metadata scroll/collapse, fixed toolbar at 1280x900 and 900x640, adding all six kinds at list end, Chinese action names and parameters through collapse/move/delete/save/YAML/point switch/route reopen/process restart. No playback requested.'
+    Write-Output 'Passed: 36 mixed actions, clean disclosure controls, metadata scroll/collapse, fixed toolbar with all seven kinds including native drag at 1280x900 and 900x640, adding every kind at list end, native speed default 2 edited to 37, Chinese action names and parameters through collapse/move/delete/save/cache/YAML/point switch/route reopen/process restart. No playback requested.'
 } catch {
     if ($null -ne $root) {
         try {

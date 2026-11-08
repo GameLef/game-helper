@@ -40,15 +40,18 @@ pub enum OpKind {
     Wheel,
     Drag,
     Wait,
+    #[serde(rename = "drag_native")]
+    DragNative,
 }
 impl OpKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Click,
         Self::Key,
         Self::Press,
         Self::Wheel,
         Self::Drag,
         Self::Wait,
+        Self::DragNative,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -58,6 +61,7 @@ impl OpKind {
             Self::Wheel => "wheel",
             Self::Drag => "drag",
             Self::Wait => "wait",
+            Self::DragNative => "drag_native",
         }
     }
 }
@@ -80,6 +84,7 @@ impl Operation {
             OpKind::Wheel => json!({"delta": 1}),
             OpKind::Drag => json!({"from": anchor, "to": anchor, "duration": 200}),
             OpKind::Wait => json!({"ms": 100}),
+            OpKind::DragNative => json!({"from": anchor, "to": anchor, "speed": 2}),
         };
         Self {
             kind,
@@ -98,7 +103,7 @@ impl Point {
             .find_map(|op| {
                 let key = match op.kind {
                     OpKind::Click => "pos",
-                    OpKind::Drag => "from",
+                    OpKind::Drag | OpKind::DragNative => "from",
                     _ => return None,
                 };
                 let pair = op.params.get(key)?.as_array()?;
