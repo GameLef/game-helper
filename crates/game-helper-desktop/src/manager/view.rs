@@ -24,6 +24,9 @@ fn muted(text: impl Into<SharedString>) -> Div {
         .text_color(color(MUTED))
         .child(text.into())
 }
+fn list_detail(text: impl Into<SharedString>, selected: bool) -> Div {
+    muted(text).text_color(color(if selected { LIST_SELECTED_MUTED } else { MUTED }))
+}
 fn heading(text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(16.))
@@ -123,7 +126,7 @@ impl Manager {
                         .child(entry.name.clone()),
                 )
                 .child(
-                    muted(format!("{}.yaml", entry.stem))
+                    list_detail(format!("{}.yaml", entry.stem), selected)
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap(),
@@ -131,22 +134,22 @@ impl Manager {
                 .child(
                     row()
                         .justify_between()
-                        .child(muted(format!("{} 个点位", entry.points)))
-                        .child(muted(binding.to_owned())),
+                        .child(list_detail(format!("{} 个点位", entry.points), selected))
+                        .child(list_detail(binding.to_owned(), selected)),
                 );
             if entry.error.is_some() {
                 title = title.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(color(RED))
+                        .text_color(color(DANGER))
                         .child("格式有误，打开修复"),
                 );
             }
             let variant = ButtonCustomVariant::new(cx)
-                .color(color(if selected { TINT } else { PAPER }))
-                .foreground(color(INK))
-                .hover(color(if selected { TINT } else { FOG }))
-                .active(color(TINT));
+                .color(color(SURFACE))
+                .foreground(color(TEXT))
+                .hover(color(CANVAS))
+                .active(color(LIST_SELECTED));
             entries = entries.child(
                 self.button(
                     ("route", i),
@@ -158,11 +161,12 @@ impl Manager {
                 .accessibility_id(format!("route-{}", entry.stem))
                 .accessibility_label(format!("{} {}", entry.stem, entry.name))
                 .custom(variant)
+                .selected(selected)
                 .w_full()
                 .h_auto()
                 .p_3()
                 .border_l_2()
-                .border_color(color(if selected { TEAL } else { PAPER }))
+                .border_color(color(if selected { EMPHASIS } else { SURFACE }))
                 .child(title),
             );
         }
@@ -211,21 +215,23 @@ impl Manager {
                 column()
                     .gap_2()
                     .p_3()
-                    .bg(color(FOG))
+                    .bg(color(CANVAS))
                     .rounded(px(6.))
                     .child(self.field("stem", "文件名（不含扩展名）"))
                     .child(
                         self.button("new", "创建草稿", Action::New, false, cx)
                             .primary()
+                            .border_1()
+                            .border_color(color(EMPHASIS))
                             .small(),
                     ),
             );
         }
         column()
             .size_full()
-            .bg(color(PAPER))
+            .bg(color(SURFACE))
             .border_r_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(tools)
             .child(
                 div()
@@ -241,11 +247,11 @@ impl Manager {
                 muted("路线仅在点击保存后写入文件")
                     .p_3()
                     .border_t_1()
-                    .border_color(color(LINE)),
+                    .border_color(color(BORDER)),
             )
     }
 
-    fn workspace_header(&self, source_mode: bool, cx: &Context<Self>) -> Div {
+    fn workspace_header(&self, source_mode: bool, cx: &Context<Self>) -> impl IntoElement {
         let title = self
             .document
             .as_ref()
@@ -268,96 +274,146 @@ impl Manager {
         } else {
             "已保存"
         };
+        let title_tooltip = title.clone();
+        let file_tooltip = file.clone();
+        let modes = row()
+            .gap_1()
+            .flex_shrink_0()
+            .child(
+                self.button(
+                    "form",
+                    "点位编辑",
+                    Action::Switch(EditMode::Form),
+                    false,
+                    cx,
+                )
+                .ghost()
+                .small()
+                .h(px(28.))
+                .selected(!source_mode),
+            )
+            .child(
+                self.button(
+                    "yaml",
+                    "YAML 源码",
+                    Action::Switch(EditMode::Source),
+                    false,
+                    cx,
+                )
+                .ghost()
+                .small()
+                .h(px(28.))
+                .selected(source_mode),
+            );
+        let commands = row()
+            .gap_1()
+            .flex_shrink_0()
+            .child(
+                self.button(
+                    "properties-toggle",
+                    "路线属性",
+                    Action::ToggleProperties,
+                    source_mode,
+                    cx,
+                )
+                .ghost()
+                .small()
+                .h(px(28.))
+                .selected(self.properties_open && !source_mode),
+            )
+            .child(
+                self.button("files-toggle", "文件操作", Action::ToggleFiles, false, cx)
+                    .ghost()
+                    .small()
+                    .h(px(28.))
+                    .selected(self.files_open),
+            )
+            .child(
+                self.button("save", "保存", Action::Save(false, None), false, cx)
+                    .primary()
+                    .small()
+                    .h(px(28.))
+                    .border_1()
+                    .border_color(color(EMPHASIS)),
+            );
         let mut header = column()
-            .gap_3()
-            .px_5()
-            .py_4()
+            .id("workspace-header")
+            .accessibility_id("workspace-header")
+            .role(gpui_kit::Role::Group)
+            .aria_label("路线工具栏")
+            .flex_shrink_0()
+            .gap_2()
+            .px_3()
+            .py_2()
             .border_b_1()
-            .border_color(color(LINE))
-            .bg(color(PAPER))
+            .border_color(color(BORDER))
+            .bg(color(SURFACE))
             .child(
                 row()
                     .flex_wrap()
-                    .gap_3()
+                    .gap_1()
                     .child(
                         column()
                             .flex_1()
-                            .gap_1()
+                            .min_w(px(160.))
+                            .overflow_hidden()
                             .child(
                                 div()
-                                    .text_size(px(22.))
+                                    .id("route-context-name")
+                                    .text_size(px(17.))
+                                    .line_height(px(22.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .overflow_hidden()
                                     .whitespace_nowrap()
                                     .text_ellipsis()
-                                    .child(if source_mode {
-                                        "YAML 源码".into()
-                                    } else {
-                                        title
-                                    }),
+                                    .tooltip(move |w, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(
+                                            title_tooltip.clone(),
+                                        )
+                                        .build(w, cx)
+                                    })
+                                    .child(title),
                             )
                             .child(
-                                row().flex_wrap().child(muted(file)).child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .text_color(color(if self.dirty() { AMBER } else { MUTED }))
-                                        .child(saved),
-                                ),
+                                row()
+                                    .gap(px(8.))
+                                    .line_height(px(16.))
+                                    .child(
+                                        muted(file)
+                                            .id("route-context-file")
+                                            .accessibility_id("route-context-file")
+                                            .role(gpui_kit::Role::Label)
+                                            .aria_label(file_tooltip.clone())
+                                            .flex_shrink_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .tooltip(move |w, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    file_tooltip.clone(),
+                                                )
+                                                .build(w, cx)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("route-save-state")
+                                            .accessibility_id("route-save-state")
+                                            .role(gpui_kit::Role::Label)
+                                            .aria_label(saved)
+                                            .flex_shrink_0()
+                                            .text_size(px(12.))
+                                            .text_color(color(if self.dirty() {
+                                                WARNING
+                                            } else {
+                                                MUTED
+                                            }))
+                                            .child(saved),
+                                    ),
                             ),
                     )
-                    .child(
-                        self.button("save", "保存", Action::Save(false, None), false, cx)
-                            .primary(),
-                    )
-                    .child(
-                        self.button("files-toggle", "文件操作", Action::ToggleFiles, false, cx)
-                            .ghost()
-                            .selected(self.files_open),
-                    ),
-            )
-            .child(
-                row()
-                    .flex_wrap()
-                    .justify_between()
-                    .child(
-                        row()
-                            .child(
-                                self.button(
-                                    "form",
-                                    "点位编辑",
-                                    Action::Switch(EditMode::Form),
-                                    false,
-                                    cx,
-                                )
-                                .ghost()
-                                .small()
-                                .selected(!source_mode),
-                            )
-                            .child(
-                                self.button(
-                                    "yaml",
-                                    "YAML 源码",
-                                    Action::Switch(EditMode::Source),
-                                    false,
-                                    cx,
-                                )
-                                .ghost()
-                                .small()
-                                .selected(source_mode),
-                            ),
-                    )
-                    .child(
-                        self.button(
-                            "properties-toggle",
-                            "路线属性",
-                            Action::ToggleProperties,
-                            source_mode,
-                            cx,
-                        )
-                        .ghost()
-                        .small()
-                        .selected(self.properties_open && !source_mode),
-                    ),
+                    .child(row().gap_2().flex_wrap().child(modes).child(commands)),
             );
         if self.files_open {
             header = header.child(
@@ -382,17 +438,24 @@ impl Manager {
                         )
                         .ghost()
                         .small()
-                        .text_color(color(RED)),
+                        .text_color(color(DANGER)),
                     ),
             );
         }
         if self.properties_open && !source_mode {
             header = header.child(
                 column()
-                    .gap_3()
-                    .p_3()
-                    .bg(color(FOG))
-                    .rounded(px(6.))
+                    .id("route-properties")
+                    .accessibility_id("route-properties")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("路线属性")
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .p_2()
+                    .bg(color(CANVAS))
+                    .rounded(px(4.))
                     .child(
                         row()
                             .flex_wrap()
@@ -439,8 +502,8 @@ impl Manager {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(color(if selected { TEAL } else { FOG }))
-                        .text_color(color(if selected { PAPER } else { MUTED }))
+                        .bg(color(if selected { EMPHASIS } else { CANVAS }))
+                        .text_color(color(if selected { SURFACE } else { MUTED }))
                         .font_family("Bahnschrift")
                         .text_size(px(15.))
                         .child((i + 1).to_string()),
@@ -450,11 +513,11 @@ impl Manager {
                         .w(px(1.))
                         .h(px(26.))
                         .bg(color(if i + 1 < points.len() {
-                            LINE
+                            BORDER
                         } else if selected {
-                            TINT
+                            LIST_SELECTED
                         } else {
-                            PAPER
+                            SURFACE
                         })),
                 );
             let name = if selected {
@@ -468,13 +531,16 @@ impl Manager {
                     .accessibility_label(format!("第 {} 点 {}", i + 1, name))
                     .custom(
                         ButtonCustomVariant::new(cx)
-                            .color(color(if selected { TINT } else { PAPER }))
-                            .foreground(color(INK))
-                            .hover(color(FOG))
-                            .active(color(TINT)),
+                            .color(color(SURFACE))
+                            .foreground(color(TEXT))
+                            .hover(color(CANVAS))
+                            .active(color(LIST_SELECTED)),
                     )
+                    .selected(selected)
                     .w_full()
                     .h_auto()
+                    .border_l_2()
+                    .border_color(color(if selected { EMPHASIS } else { SURFACE }))
                     .px_3()
                     .pt_3()
                     .pb_0()
@@ -492,7 +558,10 @@ impl Manager {
                                         .whitespace_nowrap()
                                         .child(name),
                                 )
-                                .child(muted(format!("{} 个动作", point.operations.len()))),
+                                .child(list_detail(
+                                    format!("{} 个动作", point.operations.len()),
+                                    selected,
+                                )),
                         ),
                     ),
             );
@@ -503,9 +572,9 @@ impl Manager {
         let index = self.selected;
         column()
             .size_full()
-            .bg(color(PAPER))
+            .bg(color(SURFACE))
             .border_r_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 column()
                     .gap_3()
@@ -537,7 +606,7 @@ impl Manager {
                     .gap_1()
                     .p_3()
                     .border_t_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .child(
                         self.button(
                             "up",
@@ -570,7 +639,7 @@ impl Manager {
                         )
                         .ghost()
                         .small()
-                        .text_color(color(RED)),
+                        .text_color(color(DANGER)),
                     ),
             )
     }
@@ -598,7 +667,7 @@ impl Manager {
             .py_3()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 row()
                     .flex_wrap()
@@ -612,7 +681,7 @@ impl Manager {
                                 div()
                                     .text_size(px(18.))
                                     .font_family("Bahnschrift")
-                                    .text_color(color(TEAL))
+                                    .text_color(color(EMPHASIS))
                                     .child(format!("{:02}", index + 1)),
                             )
                             .child(
@@ -708,7 +777,7 @@ impl Manager {
                                 )
                                 .ghost()
                                 .small()
-                                .text_color(color(RED))
+                                .text_color(color(DANGER))
                                 .accessibility_label(format!("删除动作 {}", index + 1)),
                             ),
                     ),
@@ -776,7 +845,7 @@ impl Manager {
 
     fn point_inspector(&self, cx: &Context<Self>) -> impl IntoElement {
         let Some(index) = self.selected else {
-            return column().size_full().bg(color(PAPER)).child(empty(
+            return column().size_full().bg(color(SURFACE)).child(empty(
                 "选择一个点位",
                 "在左侧新增或选择点位，在这里编辑名称、备注与动作。",
             ));
@@ -801,16 +870,17 @@ impl Manager {
                 )
                 .accessibility_id(format!("operation-add-{}", kind.label()))
                 .small()
+                .h(px(28.))
                 .ghost(),
             );
         }
         let toolbar = column()
-            .gap_1()
+            .gap(px(3.))
             .px_4()
-            .py_2()
+            .py_1()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 row()
                     .gap_2()
@@ -860,6 +930,7 @@ impl Manager {
                                 .track_focus(&self.point_info_focus)
                                 .toggled(self.point_info_open)
                                 .small()
+                                .h(px(28.))
                                 .ghost(),
                             ),
                     )
@@ -878,6 +949,7 @@ impl Manager {
                         .accessibility_id("operation-toggle-all")
                         .track_focus(&self.all_ops_focus)
                         .small()
+                        .h(px(28.))
                         .ghost(),
                     ),
             )
@@ -900,7 +972,7 @@ impl Manager {
                     .py_3()
                     .flex_shrink_0()
                     .border_b_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .child(self.field("point_name", "点位名称"))
                     .child(self.field("point_note", "点位备注")),
             );
@@ -917,7 +989,7 @@ impl Manager {
         column()
             .size_full()
             .min_h_0()
-            .bg(color(PAPER))
+            .bg(color(SURFACE))
             .child(
                 div()
                     .id("operation-toolbar")
@@ -964,18 +1036,18 @@ impl Manager {
     }
 
     fn welcome(&self, cx: &Context<Self>) -> Div {
-        column().size_full().justify_center().px_5().bg(color(PAPER))
+        column().size_full().justify_center().px_5().bg(color(SURFACE))
             .child(column().max_w(px(520.)).gap_4().mx_auto()
-                .child(gpui_kit::component::Icon::default().data(br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><path d="M14 47V22a8 8 0 0 1 8-8h20a8 8 0 0 1 8 8v20" fill="none" stroke="#236B73" stroke-width="3"/><circle cx="14" cy="47" r="6" fill="#236B73"/><circle cx="32" cy="14" r="5" fill="#EDF2F4" stroke="#236B73" stroke-width="3"/><circle cx="50" cy="47" r="6" fill="#FFFFFF" stroke="#236B73" stroke-width="3"/></svg>"##).size(px(64.)))
+                .child(gpui_kit::component::Icon::default().data(&format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><path d="M14 47V22a8 8 0 0 1 8-8h20a8 8 0 0 1 8 8v20" fill="none" stroke="#{EMPHASIS:06X}" stroke-width="3"/><circle cx="14" cy="47" r="6" fill="#{PRIMARY:06X}" stroke="#{EMPHASIS:06X}" stroke-width="2"/><circle cx="32" cy="14" r="5" fill="#{SELECTED:06X}" stroke="#{EMPHASIS:06X}" stroke-width="3"/><circle cx="50" cy="47" r="6" fill="#{SURFACE:06X}" stroke="#{EMPHASIS:06X}" stroke-width="3"/></svg>"##).into_bytes()).size(px(64.)))
                 .child(div().text_size(px(28.)).font_weight(FontWeight::SEMIBOLD).child("把操作编排成路线"))
                 .child(div().text_size(px(15.)).text_color(color(MUTED)).line_height(px(26.)).child("选择一条路线继续编辑，或从取点开始。点位决定操作位置，动作决定每一步做什么。"))
                 .child(row().flex_wrap()
-                    .child(self.button("welcome-new", "新建路线", Action::ToggleNew, false, cx).primary())
+                    .child(self.button("welcome-new", "新建路线", Action::ToggleNew, false, cx).primary().border_1().border_color(color(EMPHASIS)))
                     .child(self.button("welcome-picker", "打开取点工具", Action::Picker, false, cx)))
                 .child(muted("支持点击、按键、按住、滚轮、拖动和等待。")))
     }
 
-    fn service_header(&self, cx: &Context<Self>) -> Div {
+    fn service_header(&self, cx: &Context<Self>) -> impl IntoElement {
         let state = if self.daemon_error.is_some() {
             "状态未知"
         } else if self.daemon.busy {
@@ -986,20 +1058,25 @@ impl Manager {
             "未启动"
         };
         let mut header = column()
+            .id("service-header")
+            .accessibility_id("service-header")
+            .role(gpui_kit::Role::Group)
+            .aria_label("执行服务与工具")
             .flex_shrink_0()
             .border_b_1()
-            .border_color(color(LINE))
-            .bg(color(FOG))
+            .border_color(color(BORDER))
+            .bg(color(CANVAS))
             .child(
                 row()
                     .flex_wrap()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
                     .child(
                         self.button("library-toggle", "路线库", Action::ToggleLibrary, false, cx)
                             .ghost()
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     )
                     .child(div().flex_1())
                     .child(
@@ -1007,9 +1084,9 @@ impl Manager {
                             .gap_2()
                             .child(div().size(px(7.)).rounded_full().bg(color(
                                 if self.daemon_error.is_some() {
-                                    RED
+                                    DANGER
                                 } else if self.daemon.running {
-                                    TEAL
+                                    EMPHASIS
                                 } else {
                                     MUTED
                                 },
@@ -1026,11 +1103,13 @@ impl Manager {
                         )
                         .ghost()
                         .small()
+                        .h(px(28.))
                         .selected(self.service_open),
                     )
                     .child(
                         self.button("picker", "取点工具", Action::Picker, false, cx)
-                            .small(),
+                            .small()
+                            .h(px(28.)),
                     ),
             );
         if self.service_open {
@@ -1114,7 +1193,19 @@ impl Manager {
         header
     }
 
-    fn execution_bar(&self, cx: &Context<Self>) -> Div {
+    fn execution_progress(&self) -> String {
+        if self.runner.is_some() {
+            return "独立执行进程运行中".into();
+        }
+        self.document
+            .as_ref()
+            .and_then(|d| d.stem().ok())
+            .and_then(|s| self.cursor.routes.get(&s))
+            .map(|p| format!("单步 {}/{}，起始点 {}", p.last_done, p.total, p.start_at))
+            .unwrap_or_else(|| "尚无单步进度".into())
+    }
+
+    fn execution_bar(&self, cx: &Context<Self>) -> impl IntoElement {
         let has_doc = self.document.is_some();
         let stop_key = self
             .config
@@ -1123,65 +1214,78 @@ impl Manager {
             .unwrap_or("F12");
         let disabled =
             !has_doc || self.daemon.busy || self.daemon_error.is_some() || self.runner.is_some();
-        let mut progress = "尚无单步进度".to_owned();
-        if let Some(p) = self
-            .document
-            .as_ref()
-            .and_then(|d| d.stem().ok())
-            .and_then(|s| self.cursor.routes.get(&s))
-        {
-            progress = format!("单步 {}/{}，起始点 {}", p.last_done, p.total, p.start_at);
-        }
-        if self.runner.is_some() {
-            progress = "独立执行进程运行中".into();
-        }
-        column()
+        let inputs_disabled = !has_doc || self.controls_busy() || self.confirmation.is_some();
+        row()
+            .id("execution-bar")
+            .accessibility_id("execution-bar")
+            .role(gpui_kit::Role::Group)
+            .aria_label("路线执行与热键绑定")
             .flex_shrink_0()
+            .flex_wrap()
             .gap_2()
-            .px_4()
-            .py_3()
-            .bg(color(PAPER))
+            .px_3()
+            .py_1()
+            .bg(color(SURFACE))
             .border_t_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 row()
-                    .flex_wrap()
-                    .gap_3()
+                    .flex_shrink_0()
+                    .child(muted("起始点"))
                     .child(
-                        row().child(muted("起始点")).child(
-                            div().w(px(64.)).child(
+                        div()
+                            .id("start-field")
+                            .accessibility_id("start-field")
+                            .role(gpui_kit::Role::Group)
+                            .aria_label("起始点输入区域")
+                            .w(px(56.))
+                            .child(Styled::h(
                                 Input::new(&self.fields["start"])
                                     .accessibility_id("start")
                                     .aria_label("起始点")
-                                    .disabled(
-                                        !has_doc
-                                            || self.controls_busy()
-                                            || self.confirmation.is_some(),
-                                    ),
-                            ),
-                        ),
+                                    .small()
+                                    .disabled(inputs_disabled),
+                                px(32.),
+                            )),
                     )
-                    .child(self.button(
-                        "only",
-                        "试跑选中点",
-                        Action::RunPoint(self.selected.map(|i| i + 1).unwrap_or(0), false),
-                        disabled || self.selected.is_none(),
-                        cx,
-                    ))
-                    .child(div().flex_1())
                     .child(
-                        row().child(muted("路线热键")).child(
-                            div().w(px(130.)).child(
+                        self.button(
+                            "only",
+                            "试跑选中点",
+                            Action::RunPoint(self.selected.map(|i| i + 1).unwrap_or(0), false),
+                            disabled || self.selected.is_none(),
+                            cx,
+                        )
+                        .small(),
+                    ),
+            )
+            .child(
+                row()
+                    .flex_1()
+                    .justify_end()
+                    .min_w(px(290.))
+                    .child(muted("路线热键"))
+                    .child(
+                        div()
+                            .id("hotkey-binding-field")
+                            .accessibility_id("hotkey-binding-field")
+                            .role(gpui_kit::Role::Group)
+                            .aria_label("路线热键输入区域")
+                            .w(px(124.))
+                            .tooltip(|w, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(
+                                    "热键留空后保存绑定，可解除此路线的热键绑定",
+                                )
+                                .build(w, cx)
+                            })
+                            .child(Styled::h(
                                 Input::new(&self.fields["hotkey"])
                                     .accessibility_id("hotkey")
                                     .aria_label("路线热键")
-                                    .disabled(
-                                        !has_doc
-                                            || self.controls_busy()
-                                            || self.confirmation.is_some(),
-                                    ),
-                            ),
-                        ),
+                                    .small()
+                                    .disabled(inputs_disabled),
+                                px(32.),
+                            )),
                     )
                     .child(
                         self.button(
@@ -1196,20 +1300,21 @@ impl Manager {
             )
             .child(
                 row()
-                    .flex_wrap()
-                    .justify_between()
-                    .child(muted(format!("{progress}    热键留空可解除绑定")))
+                    .flex_shrink_0()
+                    .pl_3()
+                    .border_l_1()
+                    .border_color(color(BORDER))
+                    .child(muted("全局急停"))
                     .child(
-                        row().child(muted("全局急停")).child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .rounded(px(4.))
-                                .bg(color(FOG))
-                                .text_size(px(12.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(stop_key.to_owned()),
-                        ),
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded(px(4.))
+                            .bg(color(ERROR_BG))
+                            .text_color(color(DANGER))
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(stop_key.to_owned()),
                     ),
             )
     }
@@ -1228,7 +1333,7 @@ impl Manager {
             } else if *label == "确认删除" {
                 button = button.danger();
             } else if i == 0 {
-                button = button.primary();
+                button = button.primary().border_1().border_color(color(EMPHASIS));
             }
             choices = choices.child(button);
         }
@@ -1237,7 +1342,7 @@ impl Manager {
             .occlude()
             .absolute()
             .inset_0()
-            .bg(gpui_kit::rgba(0x173F4A66))
+            .bg(gpui_kit::rgba(SCRIM))
             .flex()
             .items_center()
             .justify_center()
@@ -1248,9 +1353,9 @@ impl Manager {
                     .w_full()
                     .gap_5()
                     .p_5()
-                    .bg(color(PAPER))
+                    .bg(color(SURFACE))
                     .border_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .rounded(px(8.))
                     .id("confirmation-dialog")
                     .role(gpui_kit::Role::Dialog)
@@ -1288,35 +1393,69 @@ impl Manager {
         } else {
             work.into_any_element()
         };
+        let status: SharedString = if self.controls_busy() {
+            "正在处理…".into()
+        } else {
+            self.status.clone()
+        };
+        let status_tooltip = status.clone();
+        let progress = self.execution_progress();
+        let progress_tooltip = progress.clone();
         let mut root = column()
             .relative()
             .size_full()
-            .bg(color(FOG))
-            .text_color(color(INK))
+            .bg(color(CANVAS))
+            .text_color(color(TEXT))
             .text_size(px(14.))
             .child(self.service_header(cx))
             .child(div().flex_1().min_h_0().min_w_0().child(body))
             .child(self.execution_bar(cx))
             .child(
-                div()
+                row()
                     .id("manager-status")
                     .role(gpui_kit::Role::Status)
                     .accessibility_id("manager-status")
-                    .aria_label(if self.controls_busy() {
-                        "正在处理…".into()
-                    } else {
-                        self.status.clone()
-                    })
-                    .px_4()
-                    .py_2()
+                    .aria_label(format!("{status}。{progress}"))
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_1()
+                    .line_height(px(20.))
                     .text_size(px(12.))
-                    .bg(color(if self.status_is_error { 0xF9EBEE } else { FOG }))
-                    .text_color(color(if self.status_is_error { RED } else { MUTED }))
-                    .child(if self.controls_busy() {
-                        "正在处理…".into()
+                    .bg(color(if self.status_is_error {
+                        ERROR_BG
                     } else {
-                        self.status.clone()
-                    }),
+                        CANVAS
+                    }))
+                    .text_color(color(if self.status_is_error { DANGER } else { MUTED }))
+                    .child(
+                        div()
+                            .id("manager-status-message")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .tooltip(move |w, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(status_tooltip.clone())
+                                    .build(w, cx)
+                            })
+                            .child(status),
+                    )
+                    .children((!self.status_is_error).then(|| {
+                        div()
+                            .id("execution-progress")
+                            .accessibility_id("execution-progress")
+                            .flex_shrink_0()
+                            .max_w(px(280.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .tooltip(move |w, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(progress_tooltip.clone())
+                                    .build(w, cx)
+                            })
+                            .child(progress)
+                    })),
             );
         if self.opening_route {
             root = root.child(
@@ -1335,9 +1474,9 @@ impl Manager {
                         muted("正在切换路线…")
                             .px_4()
                             .py_2()
-                            .bg(color(PAPER))
+                            .bg(color(SURFACE))
                             .border_1()
-                            .border_color(color(LINE))
+                            .border_color(color(BORDER))
                             .rounded(px(6.)),
                     ),
             );

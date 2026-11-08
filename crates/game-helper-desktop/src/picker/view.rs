@@ -107,7 +107,7 @@ impl Picker {
                     div()
                         .flex_shrink_0()
                         .text_size(px(11.))
-                        .text_color(color(TEAL))
+                        .text_color(color(EMPHASIS))
                         .child("已选择"),
                 );
             }
@@ -119,16 +119,16 @@ impl Picker {
                     .selected(selected)
                     .custom(
                         ButtonCustomVariant::new(cx)
-                            .color(color(if selected { TINT } else { PAPER }))
-                            .foreground(color(INK))
-                            .hover(color(if selected { TINT } else { FOG }))
-                            .active(color(TINT)),
+                            .color(color(if selected { SELECTED } else { SURFACE }))
+                            .foreground(color(TEXT))
+                            .hover(color(if selected { SELECTED } else { CANVAS }))
+                            .active(color(SELECTED)),
                     )
                     .w_full()
                     .h_auto()
                     .p_3()
                     .border_l_2()
-                    .border_color(color(if selected { TEAL } else { PAPER }))
+                    .border_color(color(if selected { EMPHASIS } else { SURFACE }))
                     .child(
                         column()
                             .flex_1()
@@ -166,9 +166,9 @@ impl Picker {
             .w(px(280.))
             .flex_shrink_0()
             .min_h_0()
-            .bg(color(PAPER))
+            .bg(color(SURFACE))
             .border_r_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 column()
                     .gap_3()
@@ -219,7 +219,7 @@ impl Picker {
                     .p_4()
                     .flex_shrink_0()
                     .border_t_1()
-                    .border_color(color(LINE)),
+                    .border_color(color(BORDER)),
             )
     }
 
@@ -258,9 +258,9 @@ impl Picker {
             .gap_3()
             .p_4()
             .flex_shrink_0()
-            .bg(color(PAPER))
+            .bg(color(SURFACE))
             .border_b_1()
-            .border_color(color(LINE))
+            .border_color(color(BORDER))
             .child(
                 row()
                     .items_start()
@@ -299,6 +299,17 @@ impl Picker {
                             let visible = v
                                 .library_open
                                 .unwrap_or(w.viewport_size().width >= px(1000.));
+                            // Opening the library can turn each point into a taller two-line
+                            // row. Preserve the current logical position after that reflow.
+                            if !v.points.is_empty() {
+                                let scroll = &v.point_scroll;
+                                let at_end = scroll.offset().y <= -scroll.max_offset().y + px(1.);
+                                if at_end {
+                                    scroll.scroll_to_bottom();
+                                } else {
+                                    scroll.scroll_to_top_of_item(scroll.top_item());
+                                }
+                            }
                             v.library_open = Some(!visible);
                             cx.notify();
                         })),
@@ -310,12 +321,13 @@ impl Picker {
                     .child(
                         row()
                             .gap_2()
-                            .child(
-                                div()
-                                    .size(px(7.))
-                                    .rounded_full()
-                                    .bg(color(if self.hotkey.is_some() { TEAL } else { MUTED })),
-                            )
+                            .child(div().size(px(7.)).rounded_full().bg(color(
+                                if self.hotkey.is_some() {
+                                    EMPHASIS
+                                } else {
+                                    MUTED
+                                },
+                            )))
                             .child(muted(if self.hotkey.is_some() {
                                 "全局采点热键已启用"
                             } else {
@@ -379,8 +391,8 @@ impl Picker {
             .p_4()
             .flex_shrink_0()
             .border_b_1()
-            .border_color(color(LINE))
-            .bg(color(FOG))
+            .border_color(color(BORDER))
+            .bg(color(CANVAS))
             .child(
                 row().justify_between().child(heading("实时坐标")).child(
                     control(
@@ -389,6 +401,8 @@ impl Picker {
                         self.locked() || self.target.is_none() || self.countdown.is_some(),
                     )
                     .primary()
+                    .border_1()
+                    .border_color(color(EMPHASIS))
                     .small()
                     .tooltip("点击后将光标移入目标客户区，2 秒后记录位置")
                     .on_click(
@@ -439,12 +453,12 @@ impl Picker {
                     .px_3()
                     .py_2()
                     .rounded(px(6.))
-                    .bg(color(TINT))
+                    .bg(color(SELECTED))
                     .child(
                         div()
                             .flex_1()
                             .text_size(px(12.))
-                            .text_color(color(TEAL))
+                            .text_color(color(EMPHASIS))
                             .child(message),
                     )
                     .child(
@@ -458,7 +472,7 @@ impl Picker {
             panel = panel.child(
                 ellipsis(hint)
                     .text_size(px(12.))
-                    .text_color(color(if valid { TEAL } else { MUTED })),
+                    .text_color(color(if valid { EMPHASIS } else { MUTED })),
             );
         }
         panel
@@ -493,7 +507,7 @@ impl Picker {
                         .w(px(26.))
                         .flex_shrink_0()
                         .text_center()
-                        .text_color(color(TEAL))
+                        .text_color(color(EMPHASIS))
                         .font_family("Bahnschrift")
                         .text_size(px(17.))
                         .child(format!("{:02}", index + 1)),
@@ -572,7 +586,7 @@ impl Picker {
                     )
                     .ghost()
                     .small()
-                    .text_color(color(RED))
+                    .text_color(color(DANGER))
                     .accessibility_label(format!("删除第 {} 个点位 {}", index + 1, name))
                     .on_click(cx.listener(move |v, _, _, cx| v.remove_point(index, cx))),
                 );
@@ -593,9 +607,9 @@ impl Picker {
                     .flex_shrink_0()
                     .px_3()
                     .py_2()
-                    .bg(color(PAPER))
+                    .bg(color(SURFACE))
                     .border_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .rounded(px(6.))
                     .child(content),
             );
@@ -649,7 +663,7 @@ impl Picker {
                                 )
                                 .ghost()
                                 .small()
-                                .text_color(color(RED))
+                                .text_color(color(DANGER))
                                 .on_click(cx.listener(|v, _, w, cx| v.request_clear(w, cx))),
                             ),
                     ),
@@ -680,6 +694,8 @@ impl Picker {
                     .child(
                         control("retry-close", "重试并关闭", self.persisting)
                             .primary()
+                            .border_1()
+                            .border_color(color(EMPHASIS))
                             .track_focus(&self.confirm_primary_focus)
                             .on_click(cx.listener(|v, _, w, cx| v.retry_and_close(w, cx))),
                     )
@@ -714,7 +730,7 @@ impl Picker {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(gpui_kit::rgba(0x173F4A66))
+            .bg(gpui_kit::rgba(SCRIM))
             .flex()
             .items_center()
             .justify_center()
@@ -730,9 +746,9 @@ impl Picker {
                     .max_w(px(560.))
                     .gap_4()
                     .p_5()
-                    .bg(color(PAPER))
+                    .bg(color(SURFACE))
                     .border_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .rounded(px(8.))
                     .child(heading(title))
                     .child(div().text_size(px(14.)).line_height(px(24.)).child(message))
@@ -773,16 +789,16 @@ impl Picker {
             self.status_kind
         } {
             FeedbackKind::Info => MUTED,
-            FeedbackKind::Success => TEAL,
-            FeedbackKind::Error => RED,
+            FeedbackKind::Success => SUCCESS,
+            FeedbackKind::Error => DANGER,
         };
         let mut root = column()
             .relative()
             .size_full()
             .min_w(px(900.))
             .min_h(px(640.))
-            .bg(color(FOG))
-            .text_color(color(INK))
+            .bg(color(CANVAS))
+            .text_color(color(TEXT))
             .text_size(px(14.))
             .child(body)
             .child(
@@ -795,13 +811,13 @@ impl Picker {
                     .px_4()
                     .py_2()
                     .border_t_1()
-                    .border_color(color(LINE))
+                    .border_color(color(BORDER))
                     .text_size(px(12.))
                     .text_color(color(status_color))
                     .bg(color(if self.status_kind == FeedbackKind::Error {
-                        0xF9EBEE
+                        ERROR_BG
                     } else {
-                        FOG
+                        CANVAS
                     }))
                     .tooltip(move |window, cx| {
                         gpui_kit::component::tooltip::Tooltip::new(status_tooltip.clone())

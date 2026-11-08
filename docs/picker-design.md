@@ -1,6 +1,25 @@
 # 取点工具
 
-Rust + GPUI Kit 0.9.0 原生取点工作台，使用 `start.bat --picker` 打开。视觉与路线管理器共享浅色青灰主题。
+Rust + GPUI Kit 0.9.0 原生取点工作台，使用 `start.bat --picker` 打开。视觉与路线管理器共享以 `#FBA1DB` 为核心的浅粉主题。
+
+## 浅粉主题与紧凑重排（2026-11-08）
+
+窗口底色 `#FFF7FC`、编辑工作面 `#FFFFFF`、主文字 `#382D38`、辅助文字 `#705F70`。主采点按钮使用指定原色 `#FBA1DB` 与深色文字 `#3F2438`，正常 / 悬停 / 按下的文字对比度分别约 7.38:1、6.28:1、5.35:1。选中背景为 `#FDE5F4`，选中边线和焦点为 `#9C3E78`；输入框等控件使用 `#A17D98` 边界。成功提示使用绿色，警告和错误继续使用独立语义颜色及文字。
+
+共享主题同时覆盖窗口库、目标摘要、实时坐标、采集行、输入框、按钮、确认层、滚动条和状态反馈。数据格式、自动保存、全局采点和复制坐标逻辑保持原样。
+
+小窗口展开窗口库时，采集行可能由一行重排为两行。开关窗口库前会记录逻辑滚动位置：原先位于列表底部时继续保持底部可见，浏览中间内容时保持当前顶部点位，避免因行高变化让正在查看的点位滚出视野。
+
+本次 Release 在 96 DPI 下通过[布局回归](../scripts/smoke-picker-layout.ps1)、[真实坐标粘贴](../scripts/smoke-picker-coordinates.ps1)及[排序回归](../scripts/smoke-picker-ordering.ps1)：覆盖 1120×800、900×640、窗口库边界与手动开关、19 个采集点的最新行可见、两个坐标复制入口、管理器真实 Ctrl+V、保存与重启恢复、改名排序与相邻删除、失败重试及确认层。验证均使用隔离数据和自建原生目标，没有请求游戏回放。
+
+实际原生截图：[浅粉默认窗口](assets/native-picker-pink-default.png)、[浅粉小窗口](assets/native-picker-pink-compact.png)、[浅粉确认层](assets/native-picker-pink-confirmation.png)。当前模型不支持图片输入，布局结论来自可访问性边界与交互检查；多 DPI、多显示器、系统 IME 与真实游戏仍未在本次验证中覆盖。
+
+```powershell
+pwsh -NoProfile -File scripts\smoke-picker-layout.ps1 -Executable target\release\game-helper.exe -ScreenshotPrefix native-picker-pink
+pwsh -NoProfile -File scripts\smoke-picker-coordinates.ps1 -Executable target\release\game-helper.exe
+pwsh -NoProfile -File scripts\smoke-picker-ordering.ps1 -Executable target\release\game-helper.exe
+```
+
 
 ## 布局与操作
 

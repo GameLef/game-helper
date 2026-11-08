@@ -198,7 +198,25 @@ function Record-Layout([string]$Label, [bool]$RequireListShare = $true) {
     $list = (Need-Node 'operation-list').Current.BoundingRectangle
     $inspectorHeight = $list.Bottom - $toolbar.Top
     $share = $list.Height / $inspectorHeight
+    $scale = [ManagerActionsNative]::GetDpiForWindow($manager.MainWindowHandle) / 96.0
+    $windowBounds = $root.Current.BoundingRectangle
+    $measurements = [ordered]@{ label = $Label; dpi = [int]($scale * 96); actionToolbar = $toolbar.Height / $scale; actionList = $list.Height / $scale }
+    foreach ($id in @('service-header', 'workspace-header', 'execution-bar', 'manager-status')) {
+        if (-not (In-Bounds $id $windowBounds)) { throw "Workspace chrome outside window: $id" }
+        $measurements[$id] = (Need-Node $id).Current.BoundingRectangle.Height / $scale
+    }
+    foreach ($name in @('保存', '起始点', '试跑选中点', '路线热键', '保存绑定')) {
+        $control = Named $name
+        if ($null -eq $control) { throw "Missing compact command: $name" }
+        $rect = $control.Current.BoundingRectangle
+        if ($rect.IsEmpty -or $rect.Left -lt $windowBounds.Left -or $rect.Right -gt $windowBounds.Right -or $rect.Top -lt $windowBounds.Top -or $rect.Bottom -gt $windowBounds.Bottom) { throw "Compact command outside window: $name $rect" }
+    }
+    if ($measurements['workspace-header'] -gt 88 -or $measurements['execution-bar'] -gt 44 -or $measurements['manager-status'] -gt 28 -or $measurements['service-header'] -gt 37) { throw "Workspace chrome exceeds compact height budgets: $($measurements | ConvertTo-Json -Compress)" }
+    if ($Label -eq 'manager-default' -and ($measurements.actionToolbar -gt 68 -or $measurements.actionList -lt 598)) { throw 'Default layout did not recover the required 80px of action-list height' }
+    if ($Label -eq 'manager-compact' -and $measurements.actionList -lt 306) { throw 'Compact layout did not recover the required 48px of action-list height' }
+    [IO.File]::WriteAllText((Join-Path $appRoot ($Label + '-metrics.json')), ($measurements | ConvertTo-Json), $utf8)
     Write-Output ('Layout {0}: toolbar={1:F0}x{2:F0}px; list={3:F0}x{4:F0}px; inspectorHeight={5:F0}px; listShare={6:P1}' -f $Label, $toolbar.Width, $toolbar.Height, $list.Width, $list.Height, $inspectorHeight, $share)
+    Write-Output ('Workspace chrome: ' + ($measurements | ConvertTo-Json -Compress))
     if ($RequireListShare -and $share -lt 0.60) { throw "Action list occupies less than 60% of inspector height: $Label ($share)" }
 }
 function Capture-Layout([string]$Label) {

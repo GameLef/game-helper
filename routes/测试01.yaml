@@ -188,3 +188,62 @@ points:
     pre_drag_distance: 16
     pre_drag_speed: 2
     pre_drag_delay: 20
+- id: 7
+  name: 点位 7
+  note: ''
+  operations:
+  - type: key
+    name: 按下回车
+    key: enter
+    up: false
+  - type: wait
+    ms: 20
+  - type: click
+    name: 左上角返回
+    pos:
+    - 0.025013
+    - 0.042632
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 20
+  - type: key
+    name: M键打开地图
+    key: m
+    up: false
+  - type: click
+    name: 左上角小地图
+    pos:
+    - 0.092236
+    - 0.092678
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 200
+  - type: drag_native
+    from:
+    - 0.723293
+    - 0.937905
+    to:
+    - 0.389265
+    - 0.261353
+    speed: 2
+    pre_drag_distance: 16
+    pre_drag_speed: 2
+    pre_drag_delay: 0
+  - type: click
+    name: 目标锚点
+    pos:
+    - 0.936946
+    - 0.581094
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 60
+  - type: click
+    name: 传送
+    pos:
+    - 0.976029
+    - 0.930491
+    button: left
+    clicks: 1
