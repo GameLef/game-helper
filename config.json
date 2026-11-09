@@ -3,14 +3,7 @@
   "routesDir": "routes",
   "hotkeys": {
     "stopAll": "F12",
-    "bindings": [
-      {
-        "hotkey": "'",
-        "action": "run_route",
-        "route": "-6",
-        "startAt": 1
-      }
-    ]
+    "bindings": []
   },
   "autoStartDaemon": false,
   "autoReloadOnSave": true

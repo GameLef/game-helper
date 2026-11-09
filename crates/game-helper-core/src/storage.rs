@@ -40,6 +40,9 @@ impl AppPaths {
     pub fn picker_state(&self) -> PathBuf {
         self.root.join("state/picker.json")
     }
+    pub fn manager_ui_state(&self) -> PathBuf {
+        self.root.join("state/manager-ui.json")
+    }
     pub fn route_path(&self, stem: &str) -> Result<PathBuf> {
         validate_stem(stem)?;
         ensure!(

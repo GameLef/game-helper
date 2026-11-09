@@ -112,10 +112,20 @@ function Invoke-Node($Control) {
         $Control.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Toggle()
     } elseif ($patterns -contains 'SelectionItemPatternIdentifiers.Pattern') {
         $Control.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
+    } elseif ($Control.Current.ControlType -eq [Windows.Automation.ControlType]::Button) {
+        $rect = $Control.Current.BoundingRectangle
+        if ($rect.IsEmpty -or $Control.Current.IsOffscreen) { throw 'Cannot click an offscreen native dropdown trigger' }
+        [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+        [ManagerActionsNative]::SetCursorPos([int]($rect.Left + $rect.Width / 2), [int]($rect.Top + $rect.Height / 2)) | Out-Null
+        [ManagerActionsNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+        [ManagerActionsNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
     } else { throw ('Unsupported action control: ' + $Control.Current.Name + ' [' + $Control.Current.AutomationId + ']; type=' + $Control.Current.ControlType.ProgrammaticName + '; patterns=' + ($patterns -join ', ')) }
     Start-Sleep -Milliseconds 125
 }
-function Invoke-Id([string]$Id) { Invoke-Node (Need-Node $Id) }
+function Invoke-Id([string]$Id) {
+    if ($Id -match '^operation-(toggle|drag|insert)-\d+$') { Scroll-To $Id 1 }
+    Invoke-Node (Need-Node $Id)
+}
 function Invoke-Name([string]$Name) { Invoke-Node (Named $Name) }
 function Input-Value([string]$Id) {
     (Need-Node $Id).GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value
@@ -127,7 +137,7 @@ function Set-Input([string]$Id, [string]$Text) {
 function Wait-Ready {
     Wait-Until 'manager ready' {
         $status = Node 'manager-status'
-        $add = Node 'operation-add-click'
+        $add = Node 'operation-add-menu'
         $null -ne $status -and $status.Current.Name -notmatch '正在加载|正在处理' -and $null -eq (Node 'route-loading-shield') -and $null -ne (Node 'operation-toolbar') -and $null -ne $add -and $add.Current.IsEnabled
     }
 }
@@ -138,7 +148,7 @@ function Open-Route([string]$Stem) {
     Wait-Ready
     Wait-Until "first action visible immediately after opening $Stem" {
         $bounds = (Need-Node 'operation-list').Current.BoundingRectangle
-        (In-Bounds 'operation-toggle-0' $bounds) -and (In-Bounds 'operation-0-name' $bounds)
+        (In-Bounds 'operation-toggle-0' $bounds)
     }
 }
 function Start-Manager {
@@ -186,7 +196,7 @@ function Assert-InList([string]$Id) {
 function Assert-Toolbar {
     $windowBounds = $root.Current.BoundingRectangle
     $toolbar = (Need-Node 'operation-toolbar').Current.BoundingRectangle
-    foreach ($id in @('operation-toolbar', 'operation-toggle-all', 'point-info-toggle') + @($kinds | ForEach-Object { 'operation-add-' + $_ })) {
+    foreach ($id in @('operation-toolbar', 'operation-toggle-all', 'point-info-toggle', 'operation-add-menu')) {
         if (-not (In-Bounds $id $windowBounds)) { throw "Fixed action control outside window: $id" }
         if ($id -ne 'operation-toolbar' -and -not (In-Bounds $id $toolbar)) { throw "Action control clipped by toolbar: $id" }
     }
@@ -318,6 +328,43 @@ function Action-Button([string]$Prefix, [int]$Number) {
     if ($buttons.Count -ne 1) { throw "Expected one action button: $Prefix$Number; found $($buttons.Count)" }
     $buttons[0]
 }
+function Add-Operation([string]$Kind, [string]$Entry = 'operation-add-menu') {
+    Invoke-Id $Entry
+    Invoke-Id ('operation-add-' + $Kind)
+}
+function Move-Operation([int]$From, [int]$To) {
+    Scroll-To "operation-drag-$From" 1
+    Invoke-Id "operation-drag-$From"
+    Set-Input 'operation-move-position' ([string]($To + 1))
+    Invoke-Id 'operation-move-confirm'
+}
+function Drag-Operation([int]$From, [int]$To, [string]$Release = 'drop', [int]$EdgeHold = 0) {
+    Scroll-To "operation-drag-$From" 1
+    $source = (Need-Node "operation-drag-$From").Current.BoundingRectangle
+    $target = (Need-Node "operation-panel-$To").Current.BoundingRectangle
+    $viewport = (Need-Node 'operation-list').Current.BoundingRectangle
+    $x = [int]($source.Left + $source.Width / 2)
+    $y = [int]($source.Top + $source.Height / 2)
+    $endX = [int]($viewport.Left + $viewport.Width / 2)
+    $endY = if ($From -lt $To) { [int]([Math]::Min($target.Bottom - 3, $viewport.Bottom - 18)) } else { [int]([Math]::Max($target.Top + 3, $viewport.Top + 18)) }
+    if ($EdgeHold -gt 0) { $endY = [int]($viewport.Bottom - 2) }
+    [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
+    [ManagerActionsNative]::SetCursorPos($x, $y) | Out-Null
+    [ManagerActionsNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    try {
+        for ($step = 1; $step -le 16; $step++) {
+            [ManagerActionsNative]::SetCursorPos([int]($x + ($endX - $x) * $step / 16), [int]($y + ($endY - $y) * $step / 16)) | Out-Null
+            Start-Sleep -Milliseconds 25
+        }
+        if ($EdgeHold -gt 0) { Start-Sleep -Milliseconds $EdgeHold }
+        if ($Release -eq 'escape') { [Windows.Forms.SendKeys]::SendWait('{ESC}') }
+        if ($Release -eq 'outside') { [ManagerActionsNative]::SetCursorPos([int]($viewport.Left - 20), [int]($viewport.Top + 80)) | Out-Null }
+    } finally { [ManagerActionsNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) }
+    Start-Sleep -Milliseconds 200
+}
+function Assert-MixedDisclosure {
+    if ($null -ne (Node 'operation-0-name') -or $null -eq (Node 'operation-1-name')) { throw 'Mixed disclosure state was not restored' }
+}
 try {
     Write-Output "Isolated manager action sandbox: $appRoot"
     Start-Manager
@@ -335,8 +382,27 @@ try {
     Assert-InList 'point_name'
     Invoke-Id 'point-info-toggle'
     if ($null -ne (Named '有未保存修改') -or [IO.File]::ReadAllText($routePath) -cne $originalSource) { throw 'Disclosure controls dirtied or wrote the route' }
+    $originalRouteTime = [IO.File]::GetLastWriteTimeUtc($routePath)
+    $configPath = Join-Path $appRoot 'config.json'
+    $originalConfig = [IO.File]::ReadAllText($configPath)
+    $originalConfigTime = [IO.File]::GetLastWriteTimeUtc($configPath)
+    Invoke-Id 'operation-toggle-0'
+    Assert-MixedDisclosure
+    Invoke-Id 'point-1'
+    Invoke-Id 'point-0'
+    Assert-MixedDisclosure
     Open-Route 'Other'
     Open-Route 'Actions'
+    Assert-MixedDisclosure
+    Wait-Until 'separate UI state created' { Test-Path -LiteralPath (Join-Path $appRoot 'state\manager-ui.json') }
+    $manager.CloseMainWindow() | Out-Null
+    if (-not $manager.WaitForExit(5000)) { throw 'UI state flush did not close clean manager' }
+    Start-Manager
+    Assert-MixedDisclosure
+    if ([IO.File]::ReadAllText($routePath) -cne $originalSource -or [IO.File]::GetLastWriteTimeUtc($routePath) -ne $originalRouteTime) { throw 'Disclosure wrote route contents or mtime' }
+    if ([IO.File]::ReadAllText($configPath) -cne $originalConfig -or [IO.File]::GetLastWriteTimeUtc($configPath) -ne $originalConfigTime) { throw 'Disclosure wrote config contents or mtime' }
+    if (Test-Path -LiteralPath (Join-Path $routes '_cache\Actions.json')) { throw 'Disclosure generated execution cache' }
+    Set-AllExpanded $true
 
     foreach ($size in @(@(1280, 900), @(900, 640))) {
         Resize-Manager $size[0] $size[1]
@@ -371,7 +437,7 @@ try {
     # Add every kind while at the end of the long list at minimum client size.
     foreach ($kind in $kinds) {
         $index = $expected.Count
-        Invoke-Id ('operation-add-' + $kind)
+        Add-Operation $kind
         Assert-Toolbar
         Assert-InList "operation-toggle-$index"
         Assert-InList "operation-$index-name"
@@ -420,10 +486,10 @@ try {
     Scroll-To 'operation-toggle-0' 1
     Invoke-Id 'operation-toggle-0'
     Wait-Until 'edited action collapsed before moving' { $null -eq (Node 'operation-0-name') }
-    Invoke-Node (Action-Button '下移动作 ' 1)
+    Drag-Operation 0 1
     $first = $expected[0]; $expected[0] = $expected[1]; $expected[1] = $first
     Wait-Until 'moved collapsed action identity and name' { $null -eq (Node 'operation-1-name') -and (Input-Value 'operation-0-name') -ceq $names[1] }
-    Invoke-Node (Action-Button '上移动作 ' 2)
+    Move-Operation 1 0
     $first = $expected[0]; $expected[0] = $expected[1]; $expected[1] = $first
     if ($null -ne (Node 'operation-0-name')) { throw 'Collapsed state did not follow action back upward' }
     Invoke-Id 'operation-toggle-0'
@@ -435,6 +501,66 @@ try {
     Assert-FirstNames
     Save-Route
     Assert-Cache
+
+    # Insert immediately below a collapsed action; unrelated states must stay intact.
+    Scroll-To 'operation-toggle-0' 1
+    Invoke-Id 'operation-toggle-0'
+    Add-Operation 'wait' 'operation-insert-0'
+    Set-Input 'operation-1-name' '中间插入的等待'
+    $expected.Insert(1, [pscustomobject]@{type='wait'; name='中间插入的等待'; ms=100})
+    if ($null -ne (Node 'operation-0-name')) { throw 'Insertion expanded unrelated collapsed action' }
+    Save-Route
+    Assert-Cache
+    Invoke-Node (Action-Button '删除动作 ' 2)
+    $expected.RemoveAt(1)
+    if ($null -ne (Node 'operation-0-name')) { throw 'Deleting middle insertion expanded original' }
+    Scroll-To 'operation-toggle-0' 1
+    Invoke-Id 'operation-toggle-0'
+    if ($null -eq (Node 'operation-0-name')) { throw 'Explicit expand after middle delete failed' }
+
+    # Copy is independent and inherits disclosure states; remove it after checking persistence.
+    Scroll-To 'operation-toggle-0' 1
+    if ($null -eq (Node 'operation-0-name')) { throw 'Original action should be expanded after deleting inserted action' }
+    Invoke-Id 'operation-toggle-0'
+    Assert-MixedDisclosure
+    Invoke-Id 'copy-point'
+    Assert-MixedDisclosure
+    Invoke-Id 'operation-toggle-0'
+    Set-Input 'operation-0-name' '仅修改副本的动作'
+    Save-Route
+    $copyCache = [IO.File]::ReadAllText((Join-Path $routes '_cache\Actions.json')) | ConvertFrom-Json
+    if ($copyCache.points.Count -ne 3 -or $copyCache.points[1].id -in @(42,7) -or $copyCache.points[1].name -notmatch '副本' -or $copyCache.points[0].operations[0].name -cne $expected[0].name -or $copyCache.points[1].operations[0].name -cne '仅修改副本的动作') { throw 'Copied point identity or operation independence failed' }
+    Invoke-Id 'point-0'
+    Assert-MixedDisclosure
+    Invoke-Id 'point-1'
+    if ($null -eq (Node 'operation-0-name')) { throw 'Copy and original share disclosure state' }
+    Invoke-Name '删除'
+    Invoke-Id 'point-0'
+    Invoke-Id 'operation-toggle-0'
+    Save-Route
+    Assert-Cache
+    Capture-Layout 'manager-new-actions'
+
+    # Actual cancel and edge-scroll gestures on collapsed variable-length lists.
+    Set-AllExpanded $false
+    $beforeCancel = [IO.File]::ReadAllText($routePath)
+    Drag-Operation 0 1 'escape'
+    Drag-Operation 0 1 'outside'
+    if ([IO.File]::ReadAllText($routePath) -cne $beforeCancel -or $null -ne (Named '有未保存修改')) { throw 'Cancelled drag changed the route' }
+    Drag-Operation 0 1 'drop' 950
+    Save-Route
+    $edgeCache = [IO.File]::ReadAllText((Join-Path $routes '_cache\Actions.json')) | ConvertFrom-Json
+    $movedIndex = -1
+    for ($i = 0; $i -lt $edgeCache.points[0].operations.Count; $i++) { if ($edgeCache.points[0].operations[$i].name -ceq $expected[0].name) { $movedIndex = $i; break } }
+    if ($movedIndex -lt 3) { throw "Edge auto-scroll did not move source beyond initial rows: $movedIndex" }
+    $moved = $expected[0]; $expected.RemoveAt(0); $expected.Insert($movedIndex, $moved)
+    Assert-Cache
+    if ($null -ne (Node "operation-$movedIndex-name")) { throw 'Collapsed state was lost during edge scrolling' }
+    Move-Operation $movedIndex 0
+    $expected.RemoveAt($movedIndex); $expected.Insert(0, $moved)
+    Save-Route
+    Assert-Cache
+    Set-AllExpanded $true
 
     Invoke-Name 'YAML 源码'
     $source = $root.FindFirst($scope, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, '路线 YAML 源码'))
@@ -448,7 +574,7 @@ try {
     Assert-FirstNames
     Invoke-Id 'point-1'
     if ($null -ne (Node 'operation-0-name')) { throw 'Empty point inherited action controls' }
-    Invoke-Id 'operation-add-wait'
+    Add-Operation 'wait'
     Wait-Until 'sole action added' { $null -ne (Node 'operation-0-name') }
     [ManagerActionsNative]::SetForegroundWindow($manager.MainWindowHandle) | Out-Null
     Wait-Until 'manager foreground before keyboard delete' { [ManagerActionsNative]::GetForegroundWindow() -eq $manager.MainWindowHandle }
@@ -480,7 +606,19 @@ try {
     Set-AllExpanded $true
     Assert-FirstNames
     Assert-Cache
-    Write-Output 'Passed: 36 mixed actions, clean disclosure controls, metadata scroll/collapse, fixed toolbar with all seven kinds including native drag at 1280x900 and 900x640, adding every kind at list end, native speed default 2 edited to 37, Chinese action names and parameters through collapse/move/delete/save/cache/YAML/point switch/route reopen/process restart. No playback requested.'
+    # External corruption is preserved and exposed separately from route saving.
+    $uiPath = Join-Path $appRoot 'state\manager-ui.json'
+    [IO.File]::WriteAllText($uiPath, '{broken json', $utf8)
+    Invoke-Id 'operation-toggle-0'
+    Wait-Until 'UI persistence conflict warning' { $null -ne (Node 'manager-ui-warning') }
+    Invoke-Id 'manager-ui-retry'
+    Wait-Until 'corrupt-state retry fails without replacement' { (Node 'manager-ui-warning').Current.Name -match '重试失败' }
+    if ([IO.File]::ReadAllText($uiPath) -cne '{broken json') { throw 'Corrupt UI state file was overwritten' }
+    $manager.CloseMainWindow() | Out-Null
+    Wait-Until 'failed state close fallback' { $null -ne (Node 'manager-ui-close-anyway') }
+    Invoke-Id 'manager-ui-close-anyway'
+    if (-not $manager.WaitForExit(5000)) { throw 'Explicit close-anyway failed' }
+    Write-Output 'Passed: 36 mixed actions, clean disclosure controls, metadata scroll/collapse, compact add menus with all seven kinds including native drag at 1280x900 and 900x640, adding every kind at list end, native speed default 2 edited to 37, Chinese action names and parameters, actual native drag + move dialog, middle insertion, independent point copying, disclosure persistence through point/route switches and process restart, no route/config/cache writes for disclosure. No playback requested.'
 } catch {
     if ($null -ne $root) {
         try {

@@ -2,6 +2,10 @@
 use anyhow::{Context as _, Result, ensure};
 use game_helper_core::{
     document::{EditMode, RouteDocument},
+    manager_ui::{
+        ManagerUiFile, ManagerUiState, OperationUiState, PointUiKey, PointUiState,
+        normalize_route_key,
+    },
     route::{OpKind, Operation, Point},
     storage::{self, AppPaths, ConfigFile, CursorState, DiskSnapshot, RouteEntry},
 };
@@ -16,9 +20,18 @@ use gpui_kit::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, Render, ScrollHandle,
     SharedString, Subscription, Task, Window,
 };
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
+mod interaction;
+mod persistence;
+mod point_interaction;
 mod view;
+use interaction::OperationDragState;
+use point_interaction::PointDragState;
 
 #[derive(Clone)]
 enum Action {
@@ -41,11 +54,13 @@ enum Action {
     Switch(EditMode),
     Select(usize),
     AddPoint,
+    CopyPoint,
     RemovePoint,
     Move(i32),
-    AddOp(OpKind),
+    MovePointTo { from: usize, to: usize },
+    AddOp(OpKind, Option<usize>),
     RemoveOp(usize),
-    MoveOp(usize, i32),
+    MoveOpTo { from: usize, to: usize },
     Start,
     Stop,
     Reload,
@@ -123,6 +138,8 @@ impl OperationInput {
     }
 }
 struct OperationFields {
+    ui_id: u64,
+    drag_focus: FocusHandle,
     kind: OpKind,
     name: Entity<InputState>,
     expanded: bool,
@@ -150,6 +167,27 @@ pub struct Manager {
     point_info_focus: FocusHandle,
     all_ops_focus: FocusHandle,
     operation_scroll: ScrollHandle,
+    point_scroll: ScrollHandle,
+    point_drag_focus: Vec<FocusHandle>,
+    point_drag: Option<PointDragState>,
+    drag: Option<OperationDragState>,
+    drag_scroll: gpui_kit::base::AutoScroll,
+    drag_epoch: u64,
+    move_operation: Option<usize>,
+    move_position: Entity<InputState>,
+    ui_state: ManagerUiState,
+    ui_persisted_state: ManagerUiState,
+    ui_baseline: Vec<PointUiState>,
+    ui_discard_pending: bool,
+    ui_snapshot: Option<DiskSnapshot>,
+    ui_error: Option<String>,
+    ui_revision: u64,
+    ui_saved_revision: u64,
+    ui_due: Option<Instant>,
+    ui_writing: bool,
+    ui_closing: bool,
+    ui_job: Option<Task<()>>,
+    ui_timer: Option<Task<()>>,
     selected: Option<usize>,
     form_pending: bool,
     source_pending: bool,
@@ -249,6 +287,27 @@ impl Manager {
             point_info_focus: cx.focus_handle(),
             all_ops_focus: cx.focus_handle(),
             operation_scroll: ScrollHandle::new(),
+            point_scroll: ScrollHandle::new(),
+            point_drag_focus: Vec::new(),
+            point_drag: None,
+            drag: None,
+            drag_scroll: gpui_kit::base::AutoScroll::default(),
+            drag_epoch: 0,
+            move_operation: None,
+            move_position: cx.new(|cx| InputState::new(window, cx).placeholder("输入目标序号")),
+            ui_state: ManagerUiState::default(),
+            ui_persisted_state: ManagerUiState::default(),
+            ui_baseline: Vec::new(),
+            ui_discard_pending: false,
+            ui_snapshot: None,
+            ui_error: None,
+            ui_revision: 0,
+            ui_saved_revision: 0,
+            ui_due: None,
+            ui_writing: false,
+            ui_closing: false,
+            ui_job: None,
+            ui_timer: None,
             selected: None,
             form_pending: false,
             source_pending: false,
@@ -273,10 +332,22 @@ impl Manager {
                 Ok((
                     ConfigFile::open(paths.config())?,
                     storage::list_routes(&paths)?,
+                    ManagerUiFile::open(&paths),
                 ))
             },
             |v, result, window, cx| match result {
-                Ok((config, routes)) => {
+                Ok((config, routes, ui)) => {
+                    match ui {
+                        Ok(file) => {
+                            v.ui_persisted_state = file.state.clone();
+                            v.ui_state = file.state;
+                            v.ui_snapshot = Some(file.snapshot);
+                        }
+                        Err(error) => {
+                            v.ui_error =
+                                Some(format!("读取展开状态失败：{error:#}；原文件已保留，可重试"))
+                        }
+                    }
                     let auto = config.value.auto_start_daemon;
                     v.config = Some(config);
                     v.routes = routes;
@@ -425,9 +496,17 @@ impl Manager {
         self.document = Some(doc);
         self.form_pending = false;
         self.source_pending = false;
+        self.remember_operation_state()?;
         Ok(())
     }
     fn install(&mut self, doc: RouteDocument, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_list_drag(cx);
+        if self.ui_discard_pending {
+            self.restore_discarded_ui();
+            self.ui_discard_pending = false;
+        } else {
+            let _ = self.remember_operation_state();
+        }
         let target = &doc.route().target;
         self.properties_open =
             target.process.is_empty() && target.window_class.is_empty() && target.title.is_empty();
@@ -439,10 +518,25 @@ impl Manager {
             Some(0)
         };
         self.document = Some(doc);
+        self.prepare_ui_baseline();
         self.sync(window, cx);
     }
     fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_list_drag(cx);
         self.reset_point_view();
+        self.point_scroll
+            .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+        self.point_drag_focus = self
+            .document
+            .as_ref()
+            .map(|doc| {
+                doc.route()
+                    .points
+                    .iter()
+                    .map(|_| cx.focus_handle())
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Some(doc) = self.document.as_ref() {
             let r = doc.route();
             for (k, val) in [
@@ -487,6 +581,7 @@ impl Manager {
             .set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
     }
     fn sync_point(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restored = self.restore_operation_states();
         self.operation_fields.clear();
         self.operation_subscriptions.clear();
         if let Some(p) = self
@@ -498,7 +593,7 @@ impl Manager {
             self.set("point_name", p.name.clone(), window, cx);
             self.set("point_note", p.note.clone(), window, cx);
             let position = p.action_position();
-            for op in p.operations {
+            for (op_index, op) in p.operations.into_iter().enumerate() {
                 let name = cx.new(|cx| {
                     InputState::new(window, cx)
                         .placeholder("例如：打开仓库")
@@ -561,9 +656,14 @@ impl Manager {
                     fields.push((key, input));
                 }
                 self.operation_fields.push(OperationFields {
+                    ui_id: restored
+                        .get(op_index)
+                        .map(|s| s.id)
+                        .unwrap_or(op_index as u64 + 1),
+                    drag_focus: cx.focus_handle(),
                     kind: op.kind,
                     name,
-                    expanded: true,
+                    expanded: restored.get(op_index).is_none_or(|s| s.expanded),
                     toggle_focus: cx.focus_handle(),
                     fields,
                 });
@@ -572,7 +672,7 @@ impl Manager {
         self.form_pending = false;
     }
     fn gate(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.ui_closing {
             self.status = "正在处理，请稍候".into();
             return;
         }
@@ -598,7 +698,7 @@ impl Manager {
         }
     }
     fn action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.busy || self.ui_closing {
             return;
         }
         self.confirmation = None;
@@ -637,8 +737,9 @@ impl Manager {
                     op.expanded = !op.expanded;
                     op.toggle_focus.focus(window, cx);
                     self.operation_scroll
-                        .scroll_to_top_of_item(index + usize::from(self.point_info_open));
+                        .scroll_to_top_of_item(index + self.operation_child_offset());
                 }
+                self.remember_operation_state()?;
             }
             Action::ToggleAllOps => {
                 let expand = !self.operation_fields.iter().any(|op| op.expanded);
@@ -647,6 +748,7 @@ impl Manager {
                 }
                 self.all_ops_focus.focus(window, cx);
                 self.operation_scroll.scroll_to_top_of_item(0);
+                self.remember_operation_state()?;
             }
             Action::ToggleProperties => self.properties_open = !self.properties_open,
             Action::ToggleFiles => self.files_open = !self.files_open,
@@ -663,9 +765,10 @@ impl Manager {
             }
             Action::Cancel => {}
             Action::Discard(next) => {
+                self.ui_discard_pending = true;
                 self.action(*next, window, cx);
             }
-            Action::Close => window.remove_window(),
+            Action::Close => self.close_with_ui_state(window, cx),
             Action::Refresh => {
                 let paths = self.paths.clone();
                 self.worker(
@@ -698,7 +801,10 @@ impl Manager {
                                 v.install(d, w, cx);
                                 v.status = "路线已打开".into();
                             }
-                            Err(e) => v.error(e),
+                            Err(e) => {
+                                v.ui_discard_pending = false;
+                                v.error(e);
+                            }
                         }
                     },
                 );
@@ -713,6 +819,10 @@ impl Manager {
                     |v, r, w, cx| match r {
                         Ok(d) => {
                             v.install(d, w, cx);
+                            if let Some(path) = v.document.as_ref().map(|doc| doc.path.clone()) {
+                                v.clear_route_ui(&path);
+                                v.sync_point(w, cx);
+                            }
                             v.status = "内存草稿：填写目标后保存".into();
                         }
                         Err(e) => v.error(e),
@@ -721,6 +831,7 @@ impl Manager {
             }
             Action::Switch(mode) => {
                 self.flush(cx)?;
+                self.cancel_list_drag(cx);
                 let doc = self.document.as_mut().context("请选择路线")?;
                 doc.switch(mode)?;
                 self.selected = if doc.route().points.is_empty() {
@@ -732,107 +843,20 @@ impl Manager {
             }
             Action::Select(index) => {
                 self.flush(cx)?;
+                self.cancel_list_drag(cx);
                 self.selected = Some(index);
                 self.reset_point_view();
                 self.sync_point(window, cx);
                 self.point_info_focus.focus(window, cx);
             }
             Action::AddPoint
+            | Action::CopyPoint
             | Action::RemovePoint
             | Action::Move(_)
-            | Action::AddOp(_)
+            | Action::MovePointTo { .. }
+            | Action::AddOp(_, _)
             | Action::RemoveOp(_)
-            | Action::MoveOp(_, _) => {
-                self.flush(cx)?;
-                let mut view_states: Vec<_> = self
-                    .operation_fields
-                    .iter()
-                    .map(|op| (op.expanded, op.toggle_focus.clone()))
-                    .collect();
-                let mut reveal = None;
-                let adding_op = matches!(action, Action::AddOp(_));
-                let changing_point = matches!(action, Action::AddPoint | Action::RemovePoint);
-                let doc = self.document.as_mut().context("请选择路线")?;
-                let selected = self.selected;
-                doc.edit(|route| match action {
-                    Action::AddPoint => {
-                        let id = route.next_id();
-                        route.points.push(Point::new(id));
-                        self.selected = Some(route.points.len() - 1);
-                    }
-                    Action::RemovePoint => {
-                        if let Some(i) = selected.filter(|i| *i < route.points.len()) {
-                            route.points.remove(i);
-                            self.selected = if route.points.is_empty() {
-                                None
-                            } else {
-                                Some(i.min(route.points.len() - 1))
-                            };
-                        }
-                    }
-                    Action::Move(delta) => {
-                        if let Some(i) = selected {
-                            let j = i as i32 + delta;
-                            if j >= 0 && (j as usize) < route.points.len() {
-                                route.points.swap(i, j as usize);
-                                self.selected = Some(j as usize);
-                            }
-                        }
-                    }
-                    Action::AddOp(kind) => {
-                        if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
-                            let position = p.action_position();
-                            p.operations.push(Operation::new(kind, position));
-                            reveal = Some(p.operations.len() - 1);
-                            view_states.push((true, cx.focus_handle()));
-                        }
-                    }
-                    Action::RemoveOp(index) => {
-                        if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
-                            if index < p.operations.len() {
-                                p.operations.remove(index);
-                                view_states.remove(index);
-                                reveal = (!p.operations.is_empty())
-                                    .then(|| index.min(p.operations.len() - 1));
-                            }
-                        }
-                    }
-                    Action::MoveOp(index, delta) => {
-                        if let Some(p) = selected.and_then(|i| route.points.get_mut(i)) {
-                            let next = index as i32 + delta;
-                            if next >= 0 && (next as usize) < p.operations.len() {
-                                p.operations.swap(index, next as usize);
-                                view_states.swap(index, next as usize);
-                                reveal = Some(next as usize);
-                            }
-                        }
-                    }
-                    _ => {}
-                })?;
-                if changing_point {
-                    self.reset_point_view();
-                }
-                self.sync_point(window, cx);
-                if !changing_point {
-                    for (op, (expanded, focus)) in self.operation_fields.iter_mut().zip(view_states)
-                    {
-                        op.expanded = expanded;
-                        op.toggle_focus = focus;
-                    }
-                }
-                if let Some(index) = reveal {
-                    self.operation_scroll
-                        .scroll_to_top_of_item(index + usize::from(self.point_info_open));
-                    let op = &self.operation_fields[index];
-                    if adding_op {
-                        op.name.read(cx).focus_handle(cx).focus(window, cx);
-                    } else {
-                        op.toggle_focus.focus(window, cx);
-                    }
-                } else if changing_point || self.operation_fields.is_empty() {
-                    self.point_info_focus.focus(window, cx);
-                }
-            }
+            | Action::MoveOpTo { .. } => self.edit_sequence(action, window, cx)?,
             Action::Save(ack, next) => {
                 self.flush(cx)?;
                 let doc = self.document.as_ref().context("请选择路线")?;
@@ -889,6 +913,7 @@ impl Manager {
                             }
                             match saved {
                                 Ok(_) => {
+                                    v.prepare_ui_baseline();
                                     v.status = notice
                                         .unwrap_or_else(|| "路线与执行缓存已保存".into())
                                         .into();
@@ -915,6 +940,7 @@ impl Manager {
                 let doc = self.document.as_ref().context("请选择路线")?;
                 let path = doc.path.clone();
                 let expected = doc.disk_snapshot().clone();
+                let cleanup_path = path.clone();
                 let paths = self.paths.clone();
                 let mut config = self.config.clone().context("配置不可用")?;
                 self.worker(
@@ -924,8 +950,10 @@ impl Manager {
                         storage::delete_route(&paths, &mut config, &path, &expected)?;
                         Ok(config)
                     },
-                    |v, r, w, cx| match r {
+                    move |v, r, w, cx| match r {
                         Ok(c) => {
+                            v.cancel_list_drag(cx);
+                            v.clear_route_ui(&cleanup_path);
                             v.config = Some(c);
                             v.document = None;
                             v.selected = None;
@@ -1157,6 +1185,10 @@ impl Manager {
                     |v, r, w, cx| match r {
                         Ok(Ok(d)) => {
                             v.install(d, w, cx);
+                            if let Some(path) = v.document.as_ref().map(|doc| doc.path.clone()) {
+                                v.clear_route_ui(&path);
+                                v.sync_point(w, cx);
+                            }
                             v.status = "导入内容已载入，保存后生效".into();
                         }
                         Ok(Err((stem, text))) => {
@@ -1231,7 +1263,7 @@ impl Manager {
         Ok(())
     }
     fn controls_busy(&self) -> bool {
-        self.busy && !self.opening_route
+        self.ui_closing || (self.busy && !self.opening_route)
     }
     fn button(
         &self,
@@ -1261,7 +1293,17 @@ impl Manager {
 
 impl Render for Manager {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.schedule_ui_persistence(window, cx);
         let showing = self.confirmation.is_some();
+        if (showing
+            || self.busy
+            || self.opening_route
+            || self.ui_closing
+            || !window.is_window_active())
+            && (self.drag.is_some() || self.point_drag.is_some())
+        {
+            self.cancel_list_drag(cx);
+        }
         if showing && !self.confirmation_visible {
             self.confirmation_focus.focus(window, cx);
         }

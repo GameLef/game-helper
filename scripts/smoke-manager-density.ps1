@@ -352,7 +352,19 @@ try {
 
     Invoke-Name '文件操作'
     foreach ($name in @('导出', '定位文件', '删除路线', 'YAML 源码')) { Assert-NamedVisible $name }
+    $fileButtons = @('导出', '定位文件', '删除路线') | ForEach-Object { (Named $_).Current.BoundingRectangle }
+    foreach ($rect in $fileButtons) {
+        if ([Math]::Abs($rect.Height / (Scale) - 32) -gt 1) { throw 'File operation buttons must share 32 DIP height' }
+        if ([Math]::Abs($rect.Top - $fileButtons[0].Top) / (Scale) -gt 1) { throw 'File operation buttons must share a baseline' }
+    }
+    Assert-NamedVisible '复制'
+    Assert-NamedVisible '删除'
+    if ($null -ne (Named '在开头添加 ▾')) { throw 'Removed start insertion button is still present' }
+    foreach ($id in @('operation-add-menu','operation-drag-0','operation-insert-0')) {
+        if (-not (In-Bounds (Need-Node $id) $root.Current.BoundingRectangle)) { throw "New editing control clipped: $id" }
+    }
     Assert-Layout 'files-compact' $true
+    Capture 'files-unified-compact'
     Invoke-Name '文件操作'
     Invoke-Name 'YAML 源码'
     Wait-Until 'valid route source editor shown' { $null -ne (Named '路线 YAML 源码') }
@@ -442,7 +454,7 @@ try {
     Invoke-Name '新增点位'
     Need-Node 'point-120' | Out-Null
     Assert-PointMoveState $true $false
-    Invoke-Name '删除点位'
+    Invoke-Name '删除'
     Wait-Until 'added point removed' { $null -eq (Node 'point-120') }
     Assert-PointSelection 119 '密度点位 120'
     Assert-PointMoveState $true $false

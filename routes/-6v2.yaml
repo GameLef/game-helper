@@ -1,0 +1,41 @@
+format: route/v1
+name: -6v2
+note: ''
+target:
+  process: ''
+  windowClass: ''
+  title: 原神
+points:
+- id: 1
+  name: 挪德卡莱01
+  note: ''
+  operations:
+  - type: key
+    name: 按下回车
+    key: enter
+    up: false
+  - type: wait
+    ms: 20
+  - type: click
+    name: 左上角返回
+    pos:
+    - 0.025013
+    - 0.042632
+    button: left
+    clicks: 1
+  - type: wait
+    ms: 20
+  - type: key
+    name: M键打开地图
+    key: m
+    up: false
+  - type: click
+    name: 左上角小地图
+    pos:
+    - 0.959354
+    - 0.938832
+    button: left
+    clicks: 1
+  - type: wait
+    name: 等待200毫秒
+    ms: 200

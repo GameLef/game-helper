@@ -6,6 +6,7 @@ use gpui_kit::component::{
     Selectable, Sizable,
     button::{ButtonCustomVariant, ButtonVariants},
     input::{Editor, Input},
+    menu::{DropdownMenu, PopupMenuItem},
     select::Select,
 };
 use gpui_kit::{
@@ -77,6 +78,30 @@ fn parameter_name(key: &str) -> &str {
     }
 }
 
+// Defer the edit until PopupMenu has dismissed and restored its trigger;
+// otherwise dismiss would steal focus from the newly inserted name input.
+fn enqueue_operation_add(
+    manager: &gpui_kit::WeakEntity<Manager>,
+    kind: OpKind,
+    position: Option<usize>,
+    epoch: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let _ = manager.update(cx, |_, cx| {
+        cx.defer_in(window, move |view, window, cx| {
+            if view.drag_epoch == epoch
+                && !view.busy
+                && !view.opening_route
+                && !view.ui_closing
+                && view.confirmation.is_none()
+            {
+                view.action(Action::AddOp(kind, position), window, cx);
+            }
+        });
+    });
+}
+
 impl Manager {
     fn field(&self, key: &'static str, label: &'static str) -> Div {
         column()
@@ -91,6 +116,107 @@ impl Manager {
                     .disabled(self.controls_busy() || self.confirmation.is_some())
                     .w_full(),
             )
+    }
+
+    fn operation_add_menu(
+        &self,
+        id: String,
+        label: &'static str,
+        position: Option<usize>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let manager = cx.weak_entity();
+        let epoch = self.drag_epoch;
+        Button::new(id.clone())
+            .accessibility_id(id)
+            .label(label)
+            .small()
+            .h(px(28.))
+            .disabled(
+                self.busy || self.opening_route || self.ui_closing || self.confirmation.is_some(),
+            )
+            .dropdown_menu(move |mut menu, _, popup_cx| {
+                let popup = popup_cx.weak_entity();
+                for kind in OpKind::ALL {
+                    let button_manager = manager.clone();
+                    let item_manager = manager.clone();
+                    let popup = popup.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, _| {
+                            let manager = button_manager.clone();
+                            let popup = popup.clone();
+                            Button::new(format!("operation-add-{}", kind.label()))
+                                .accessibility_id(format!("operation-add-{}", kind.label()))
+                                .accessibility_label(op_name(kind))
+                                .label(op_name(kind))
+                                .ghost()
+                                .small()
+                                .h(px(28.))
+                                .w_full()
+                                .justify_start()
+                                .on_click(move |_, window, cx| {
+                                    // A direct UI Automation invocation does not
+                                    // bubble to PopupMenu's outer menu item.
+                                    let _ =
+                                        popup.update(cx, |_, cx| cx.emit(gpui_kit::DismissEvent));
+                                    enqueue_operation_add(
+                                        &manager, kind, position, epoch, window, cx,
+                                    );
+                                    cx.stop_propagation();
+                                })
+                        })
+                        .on_click(move |_, window, cx| {
+                            enqueue_operation_add(&item_manager, kind, position, epoch, window, cx);
+                        }),
+                    );
+                }
+                menu.min_w(px(150.))
+            })
+    }
+
+    fn ui_persistence_warning(&self, cx: &Context<Self>) -> Option<Div> {
+        let message = self.ui_error.as_ref()?;
+        Some(
+            row()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .flex_shrink_0()
+                .bg(color(ERROR_BG))
+                .child(
+                    div()
+                        .id("manager-ui-warning")
+                        .accessibility_id("manager-ui-warning")
+                        .role(gpui_kit::Role::Status)
+                        .aria_label(message.clone())
+                        .text_size(px(12.))
+                        .text_color(color(DANGER))
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(message.clone()),
+                )
+                .child(
+                    Button::new("manager-ui-retry")
+                        .accessibility_id("manager-ui-retry")
+                        .label("重试")
+                        .small()
+                        .h(px(28.))
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.retry_ui_persistence(window, cx);
+                        })),
+                )
+                .children(self.ui_closing.then(|| {
+                    Button::new("manager-ui-close-anyway")
+                        .accessibility_id("manager-ui-close-anyway")
+                        .label("直接关闭")
+                        .small()
+                        .h(px(28.))
+                        .on_click(|_, window, _| window.remove_window())
+                })),
+        )
     }
 
     fn route_library(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -460,15 +586,28 @@ impl Manager {
         if self.files_open {
             header = header.child(
                 row()
+                    .id("file-operations")
+                    .accessibility_id("file-operations")
+                    .role(gpui_kit::Role::Group)
+                    .aria_label("文件操作")
                     .flex_wrap()
+                    .gap_2()
+                    .p_2()
+                    .bg(color(CANVAS))
+                    .rounded(px(4.))
                     .child(
                         self.button("export", "导出", Action::Export, false, cx)
-                            .small(),
+                            .small()
+                            .h(px(32.))
+                            .border_1()
+                            .border_color(color(CONTROL_BORDER)),
                     )
                     .child(
                         self.button("reveal", "定位文件", Action::Reveal, false, cx)
-                            .ghost()
-                            .small(),
+                            .small()
+                            .h(px(32.))
+                            .border_1()
+                            .border_color(color(CONTROL_BORDER)),
                     )
                     .child(
                         self.button(
@@ -478,8 +617,10 @@ impl Manager {
                             self.daemon.busy,
                             cx,
                         )
-                        .ghost()
                         .small()
+                        .h(px(32.))
+                        .border_1()
+                        .border_color(color(CONTROL_BORDER))
                         .text_color(color(DANGER)),
                     ),
             );
@@ -530,7 +671,22 @@ impl Manager {
             .expect("document workspace")
             .route()
             .points;
-        let mut sequence = column().gap(px(2.));
+        let mut sequence = column()
+            .id("points")
+            .accessibility_id("points")
+            .role(gpui_kit::Role::Group)
+            .aria_label("点位列表")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.point_scroll)
+            .gap(px(2.))
+            .px_2()
+            .on_drop(cx.listener(
+                |view, payload: &super::point_interaction::PointDragPayload, window, cx| {
+                    view.finish_point_drag(payload, window, cx);
+                },
+            ));
         let number_width = px(28. + points.len().to_string().len().saturating_sub(3) as f32 * 8.);
         for (i, point) in points.iter().enumerate() {
             let selected = self.selected == Some(i);
@@ -546,59 +702,98 @@ impl Manager {
                 point.operations.len()
             );
             let tooltip = detail.clone();
-            sequence = sequence.child(
-                self.button(("point", i), "", Action::Select(i), false, cx)
-                    .accessibility_id(format!("point-{i}"))
-                    .accessibility_label(detail)
-                    .tooltip(tooltip)
-                    .custom(
-                        ButtonCustomVariant::new(cx)
-                            .color(color(SURFACE))
-                            .foreground(color(TEXT))
-                            .hover(color(CANVAS))
-                            .active(color(LIST_SELECTED)),
-                    )
-                    .selected(selected)
-                    .w_full()
-                    .h(px(36.))
-                    .flex_shrink_0()
-                    .border_l_2()
-                    .border_color(color(if selected { EMPHASIS } else { SURFACE }))
-                    .px_2()
-                    .py_1()
-                    .child(
-                        row()
-                            .w_full()
-                            .gap_2()
-                            .line_height(px(20.))
-                            .child(
-                                div()
-                                    .w(number_width)
-                                    .flex_shrink_0()
-                                    .text_right()
-                                    .text_color(color(if selected { EMPHASIS } else { MUTED }))
-                                    .font_family("Bahnschrift")
-                                    .text_size(px(13.))
-                                    .child((i + 1).to_string()),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
-                                    .child(name),
-                            )
-                            .child(
-                                list_detail(format!("{} 动作", point.operations.len()), selected)
+            let handle = self.point_drag_handle(i, &name, cx);
+            let mut point_row = row()
+                .id(format!("point-row-{i}"))
+                .accessibility_id(format!("point-row-{i}"))
+                .role(gpui_kit::Role::Group)
+                .aria_label(format!("点位 {} 排序与选择", i + 1))
+                .relative()
+                .w_full()
+                .h(px(36.))
+                .flex_shrink_0()
+                .gap_0()
+                .child(handle)
+                .child(
+                    self.button(("point", i), "", Action::Select(i), false, cx)
+                        .accessibility_id(format!("point-{i}"))
+                        .accessibility_label(detail)
+                        .tooltip(tooltip)
+                        .custom(
+                            ButtonCustomVariant::new(cx)
+                                .color(color(SURFACE))
+                                .foreground(color(TEXT))
+                                .hover(color(CANVAS))
+                                .active(color(LIST_SELECTED)),
+                        )
+                        .selected(selected)
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(36.))
+                        .flex_shrink_0()
+                        .border_l_2()
+                        .border_color(color(if selected { EMPHASIS } else { SURFACE }))
+                        .px_2()
+                        .py_1()
+                        .child(
+                            row()
+                                .w_full()
+                                .gap_2()
+                                .line_height(px(20.))
+                                .child(
+                                    div()
+                                        .w(number_width)
+                                        .flex_shrink_0()
+                                        .text_right()
+                                        .text_color(color(if selected { EMPHASIS } else { MUTED }))
+                                        .font_family("Bahnschrift")
+                                        .text_size(px(13.))
+                                        .child((i + 1).to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(14.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(name),
+                                )
+                                .child(
+                                    list_detail(
+                                        format!("{} 动作", point.operations.len()),
+                                        selected,
+                                    )
                                     .flex_shrink_0()
                                     .whitespace_nowrap(),
-                            ),
-                    ),
-            );
+                                ),
+                        ),
+                );
+            if let Some(indicator) = self.point_drop_indicator(i) {
+                point_row = point_row.child(
+                    indicator
+                        .top_0()
+                        .id("point-drop-indicator")
+                        .accessibility_id("point-drop-indicator")
+                        .role(gpui_kit::Role::Status)
+                        .aria_label(format!("插入到点位 {} 前", i + 1)),
+                );
+            }
+            if i + 1 == points.len()
+                && let Some(indicator) = self.point_drop_indicator(i + 1)
+            {
+                point_row = point_row.child(
+                    indicator
+                        .bottom_0()
+                        .id("point-drop-indicator")
+                        .accessibility_id("point-drop-indicator")
+                        .role(gpui_kit::Role::Status)
+                        .aria_label("插入到点位列表末尾"),
+                );
+            }
+            sequence = sequence.child(point_row);
         }
         if points.is_empty() {
             sequence = sequence.child(empty("还没有点位", "新增点位开始编排，或使用取点工具。"));
@@ -624,18 +819,7 @@ impl Manager {
                             .h(px(28.)),
                     ),
             )
-            .child(
-                div()
-                    .id("points")
-                    .accessibility_id("points")
-                    .role(gpui_kit::Role::Group)
-                    .aria_label("点位列表")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_2()
-                    .child(sequence),
-            )
+            .child(sequence)
             .child(
                 row()
                     .flex_wrap()
@@ -670,9 +854,16 @@ impl Manager {
                         .h(px(28.)),
                     )
                     .child(
+                        self.button("copy-point", "复制", Action::CopyPoint, index.is_none(), cx)
+                            .accessibility_id("copy-point")
+                            .ghost()
+                            .small()
+                            .h(px(28.)),
+                    )
+                    .child(
                         self.button(
                             "remove-point",
-                            "删除点位",
+                            "删除",
                             Action::RemovePoint,
                             index.is_none(),
                             cx,
@@ -704,6 +895,7 @@ impl Manager {
             op_name(operation.kind)
         );
         let mut panel = column()
+            .relative()
             .gap_3()
             .py_3()
             .flex_shrink_0()
@@ -717,10 +909,11 @@ impl Manager {
                         row()
                             .flex_1()
                             .min_w(px(150.))
-                            .gap_3()
+                            .gap_2()
+                            .child(self.operation_drag_handle(index, operation, cx))
                             .child(
                                 div()
-                                    .text_size(px(18.))
+                                    .text_size(px(16.))
                                     .font_family("Bahnschrift")
                                     .text_color(color(EMPHASIS))
                                     .child(format!("{:02}", index + 1)),
@@ -784,30 +977,12 @@ impl Manager {
                                         .small(),
                                     ),
                             )
-                            .child(
-                                self.button(
-                                    ("op-up", index),
-                                    "上移",
-                                    Action::MoveOp(index, -1),
-                                    index == 0,
-                                    cx,
-                                )
-                                .ghost()
-                                .small()
-                                .accessibility_label(format!("上移动作 {}", index + 1)),
-                            )
-                            .child(
-                                self.button(
-                                    ("op-down", index),
-                                    "下移",
-                                    Action::MoveOp(index, 1),
-                                    index + 1 == self.operation_fields.len(),
-                                    cx,
-                                )
-                                .ghost()
-                                .small()
-                                .accessibility_label(format!("下移动作 {}", index + 1)),
-                            )
+                            .child(self.operation_add_menu(
+                                format!("operation-insert-{index}"),
+                                "在下方添加 ▾",
+                                Some(index + 1),
+                                cx,
+                            ))
                             .child(
                                 self.button(
                                     ("op-delete", index),
@@ -881,6 +1056,28 @@ impl Manager {
                     .child(muted("急停会在本次原生移动返回后停止后续动作。"));
             }
         }
+        if let Some(indicator) = self.operation_drop_indicator(index) {
+            panel = panel.child(
+                indicator
+                    .top_0()
+                    .id("operation-drop-indicator")
+                    .accessibility_id("operation-drop-indicator")
+                    .role(gpui_kit::Role::Status)
+                    .aria_label(format!("插入到动作 {} 前", index + 1)),
+            );
+        }
+        if index + 1 == self.operation_fields.len()
+            && let Some(indicator) = self.operation_drop_indicator(index + 1)
+        {
+            panel = panel.child(
+                indicator
+                    .bottom_0()
+                    .id("operation-drop-indicator")
+                    .accessibility_id("operation-drop-indicator")
+                    .role(gpui_kit::Role::Status)
+                    .aria_label("插入到动作列表末尾"),
+            );
+        }
         panel
     }
 
@@ -899,22 +1096,6 @@ impl Manager {
         };
         let title_tooltip = title.clone();
         let any_expanded = self.operation_fields.iter().any(|op| op.expanded);
-        let mut add = row().flex_wrap().gap_1();
-        for (i, kind) in OpKind::ALL.into_iter().enumerate() {
-            add = add.child(
-                self.button(
-                    ("op", i),
-                    format!("+ {}", op_name(kind)),
-                    Action::AddOp(kind),
-                    false,
-                    cx,
-                )
-                .accessibility_id(format!("operation-add-{}", kind.label()))
-                .small()
-                .h(px(28.))
-                .ghost(),
-            );
-        }
         let toolbar = column()
             .gap(px(3.))
             .px_4()
@@ -992,9 +1173,14 @@ impl Manager {
                         .small()
                         .h(px(28.))
                         .ghost(),
-                    ),
-            )
-            .child(add);
+                    )
+                    .child(self.operation_add_menu(
+                        "operation-add-menu".to_owned(),
+                        "添加动作 ▾",
+                        None,
+                        cx,
+                    )),
+            );
         let mut list = column()
             .id("operation-list")
             .accessibility_id("operation-list")
@@ -1005,7 +1191,12 @@ impl Manager {
             .overflow_y_scroll()
             .track_scroll(&self.operation_scroll)
             .px_4()
-            .pb_4();
+            .pb_4()
+            .on_drop(cx.listener(
+                |view, payload: &super::interaction::OperationDragPayload, window, cx| {
+                    view.finish_operation_drag(payload, window, cx);
+                },
+            ));
         if self.point_info_open {
             list = list.child(
                 column()
@@ -1021,13 +1212,22 @@ impl Manager {
         if self.operation_fields.is_empty() {
             list = list.child(empty(
                 "暂无动作",
-                "使用上方按钮添加动作；动作按列表顺序执行，时间单位为毫秒。",
+                "添加第一个动作开始编排；拖动手柄可调整顺序，时间单位为毫秒。",
             ));
         }
         for (i, op) in self.operation_fields.iter().enumerate() {
-            list = list.child(self.operation_panel(i, op, cx));
+            list = list.child(
+                column()
+                    .id(format!("operation-panel-{i}"))
+                    .accessibility_id(format!("operation-panel-{i}"))
+                    .role(gpui_kit::Role::Group)
+                    .aria_label(format!("动作 {}", i + 1))
+                    .flex_shrink_0()
+                    .child(self.operation_panel(i, op, cx)),
+            );
         }
         column()
+            .relative()
             .size_full()
             .min_h_0()
             .bg(color(SURFACE))
@@ -1041,6 +1241,7 @@ impl Manager {
                     .child(toolbar),
             )
             .child(list)
+            .children(self.operation_move_dialog(cx))
     }
 
     fn document_workspace(&self, cx: &Context<Self>) -> Div {
@@ -1449,6 +1650,7 @@ impl Manager {
             .text_color(color(TEXT))
             .text_size(px(14.))
             .child(self.service_header(cx))
+            .children(self.ui_persistence_warning(cx))
             .child(div().flex_1().min_h_0().min_w_0().child(body))
             .child(self.execution_bar(cx))
             .child(
@@ -1525,8 +1727,50 @@ impl Manager {
         if self.confirmation.is_some() {
             root = root.child(gpui_kit::deferred(self.confirmation_dialog(cx)).with_priority(2));
         }
-        root.id("manager-root").on_key_down(cx.listener(
-            |v, event: &gpui_kit::KeyDownEvent, w, cx| {
+        root.id("manager-root")
+            .on_drag_move(cx.listener(
+                |view,
+                 event: &gpui_kit::DragMoveEvent<super::point_interaction::PointDragPayload>,
+                 window,
+                 cx| {
+                    view.move_point_drag(event, window, cx);
+                },
+            ))
+            .on_drag_move(cx.listener(
+                |view,
+                 event: &gpui_kit::DragMoveEvent<super::interaction::OperationDragPayload>,
+                 window,
+                 cx| {
+                    view.move_operation_drag(event, window, cx);
+                },
+            ))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.operation_drag_released(window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.operation_drag_released(window, cx);
+                }),
+            )
+            .capture_key_down(
+                cx.listener(|view, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        if view.drag.is_some() || view.point_drag.is_some() {
+                            view.cancel_list_drag(cx);
+                            cx.stop_active_drag(window);
+                            cx.stop_propagation();
+                        } else if view.move_operation.is_some() {
+                            view.cancel_operation_move(window, cx);
+                            cx.stop_propagation();
+                        }
+                    }
+                }),
+            )
+            .on_key_down(cx.listener(|v, event: &gpui_kit::KeyDownEvent, w, cx| {
                 if v.opening_route {
                     cx.stop_propagation();
                     return;
@@ -1535,7 +1779,6 @@ impl Manager {
                     v.action(Action::Cancel, w, cx);
                     cx.stop_propagation();
                 }
-            },
-        ))
+            }))
     }
 }

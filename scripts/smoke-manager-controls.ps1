@@ -2,7 +2,7 @@ param([string]$Executable = 'target\debug\game-helper.exe')
 # Own isolated app-root; never sends input to a target app or invokes playback.
 $ErrorActionPreference='Stop'
 $projectRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$fixture=Join-Path $projectRoot '.tools\manager-controls sandbox'
+$fixture=Join-Path $projectRoot ('.tools\manager-controls-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'routes'),(Join-Path $fixture 'ahk') | Out-Null
 Copy-Item -Path (Join-Path $projectRoot 'ahk\*') -Destination (Join-Path $fixture 'ahk') -Recurse -Force
 $utf8=New-Object Text.UTF8Encoding $false
@@ -147,11 +147,15 @@ try {
   if($cached.points[0].operations[0].button -cne $case[1] -or $cached.points[0].operations[1].up -isnot [bool] -or $cached.points[0].operations[1].up -ne $case[3]){throw ('Choice save mismatch: '+($cached|ConvertTo-Json -Depth 10 -Compress))}
  }
  # Rebuilding operation controls must retain committed choices and types.
- Click-Node (By-Name '下移动作 1')
+ Click-Node (By-Id 'operation-drag-0')
+ Set-Input 'operation-move-position' '2'
+ Click-Node (By-Id 'operation-move-confirm')
  Save-Route
  $cached=Read-Cache
  if($cached.points[0].operations[0].type -ne 'key' -or -not $cached.points[0].operations[0].up -or $cached.points[0].operations[1].button -ne 'left'){throw 'Moving an operation lost choices'}
- Click-Node (By-Name '上移动作 2')
+ Click-Node (By-Id 'operation-drag-1')
+ Set-Input 'operation-move-position' '1'
+ Click-Node (By-Id 'operation-move-confirm')
  Click-Node (By-Id 'point-1')
  Click-Node (By-Id 'point-0')
  Click-Node (By-Name 'YAML 源码')
