@@ -1,8 +1,0 @@
-format: route/v1
-name: 测试01
-note: ''
-target:
-  process: ''
-  windowClass: ''
-  title: 原神
-points: []

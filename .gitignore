@@ -2,8 +2,8 @@
 logs/
 state/
 
-# ===== 路由缓存（由 yaml 自动生成）=====
-routes/_cache/
+# ===== 本地路由 =====
+/routes/
 
 # ===== Rust / project-local build tools =====
 /target/
