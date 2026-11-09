@@ -15,6 +15,12 @@ routes/_cache/
 .vscode/
 *.swp
 
+# ===== 本地文档与辅助工具 =====
+/.cyrene/
+/docs/
+/.agents/
+/scripts/
+
 # ===== 系统 =====
 Thumbs.db
 Desktop.ini
