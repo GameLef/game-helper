@@ -130,12 +130,16 @@ function Assert-Layout([string]$Label, [bool]$DisclosureOpen = $false, [bool]$We
         if (-not (In-Bounds $header $bounds)) { throw 'Route header clipped' }
         $metrics['workspace-header'] = $header.Current.BoundingRectangle.Height / $scale
         if (-not $DisclosureOpen -and $metrics['workspace-header'] -gt 88) { throw 'Normal route header exceeds 88 DIP' }
-        foreach ($name in @('保存', '点位编辑', 'YAML 源码', '路线属性', '文件操作', '起始点', '路线热键', '保存绑定', '试跑选中点')) { Assert-NamedVisible $name }
-        foreach ($pair in @(@('start-field', '试跑选中点'), @('hotkey-binding-field', '保存绑定'))) {
+        foreach ($name in @('保存', '点位编辑', 'YAML 源码', '路线属性', '文件操作', '起始点', '路线热键', '保存起始点', '试跑选中点')) { Assert-NamedVisible $name }
+        foreach ($id in @('hotkey-set', 'hotkey-clear', 'hotkey-current')) {
+            if (-not (In-Bounds (Need-Node $id) $bounds)) { throw "Hotkey control clipped: $id" }
+        }
+        if ($null -ne (Node 'hotkey')) { throw 'Removed manual hotkey input remains' }
+        foreach ($pair in @(@('start-field', '试跑选中点'), @('hotkey-set', '保存起始点'))) {
             $inputBounds = (Need-Node $pair[0]).Current.BoundingRectangle
             $buttonBounds = (Named $pair[1]).Current.BoundingRectangle
             $metrics[$pair[0] + '-height'] = $inputBounds.Height / $scale
-            if ([Math]::Abs($inputBounds.Height - $buttonBounds.Height) / $scale -gt 1) { throw "Execution input/button height mismatch: $($pair[0])" }
+            if ([Math]::Abs($inputBounds.Height - $buttonBounds.Height) / $scale -gt 1) { throw "Execution control/button height mismatch: $($pair[0])" }
         }
         $fileBounds = (Need-Node 'route-context-file').Current.BoundingRectangle
         $savedBounds = (Need-Node 'route-save-state').Current.BoundingRectangle

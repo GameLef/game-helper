@@ -178,6 +178,7 @@ fn set_binding_persists_ahk_syntax_not_human_notation() {
     let binding = reloaded.value.binding_for("-6").unwrap();
     assert_eq!(binding.hotkey, "^!F8");
     assert_eq!(binding.start_at, 3);
+    assert!(!binding.enabled, "新绑定必须等待用户开启");
     assert!(reloaded.value.binding_for("other").is_none());
 }
 #[test]

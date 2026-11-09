@@ -26,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod hotkey_capture;
 mod interaction;
 mod persistence;
 mod point_interaction;
@@ -65,8 +66,11 @@ enum Action {
     Stop,
     Reload,
     Bind,
+    SetHotkey,
+    ClearHotkey,
+    ToggleHotkey(String, bool),
     AutoStart,
-    RunPoint(usize, bool),
+    RunPoint(usize),
     Picker,
     Reveal,
     Close,
@@ -195,7 +199,10 @@ pub struct Manager {
     opening_route: bool,
     status: SharedString,
     daemon: DaemonStatus,
-    runner: Option<std::process::Child>,
+    capture: Option<hotkey_capture::HotkeyCapture>,
+    capture_task: Option<Task<()>>,
+    capture_focus: FocusHandle,
+    hotkey_button_focus: FocusHandle,
     daemon_error: Option<String>,
     cursor: CursorState,
     confirmation: Option<Confirmation>,
@@ -218,7 +225,6 @@ impl Manager {
             "title",
             "point_name",
             "point_note",
-            "hotkey",
             "start",
         ] {
             let placeholder = match key {
@@ -230,7 +236,6 @@ impl Manager {
                 "title" => "按窗口标题匹配",
                 "point_name" => "给点位起个名称",
                 "point_note" => "记录这一步的说明",
-                "hotkey" => "例如：F9",
                 "start" => "1",
                 _ => "",
             };
@@ -315,7 +320,10 @@ impl Manager {
             opening_route: false,
             status: "正在加载路线…".into(),
             daemon: DaemonStatus::default(),
-            runner: None,
+            capture: None,
+            capture_task: None,
+            capture_focus: cx.focus_handle(),
+            hotkey_button_focus: cx.focus_handle(),
             daemon_error: None,
             cursor: CursorState::default(),
             confirmation: None,
@@ -382,13 +390,6 @@ impl Manager {
                     .await;
                 if weak
                     .update(cx, |v, cx| {
-                        if let Some(child) = v.runner.as_mut() {
-                            if let Ok(Some(exit)) = child.try_wait() {
-                                v.runner = None;
-                                v.status =
-                                    format!("runner 进程已退出：{exit}；执行详情见日志").into();
-                            }
-                        }
                         if let Some(state) = state {
                             match state {
                                 Ok(s) => {
@@ -556,12 +557,6 @@ impl Manager {
                 .stem()
                 .ok()
                 .and_then(|stem| self.config.as_ref()?.value.binding_for(&stem));
-            self.set(
-                "hotkey",
-                binding.map(|b| b.hotkey.clone()).unwrap_or_default(),
-                window,
-                cx,
-            );
             self.set(
                 "start",
                 binding.map(|b| b.start_at).unwrap_or(1).to_string(),
@@ -947,19 +942,35 @@ impl Manager {
                     window,
                     cx,
                     move || {
+                        let client = DaemonClient::new(paths.clone());
+                        let state = client.status()?;
+                        ensure!(!state.busy, "执行中不能删除路线");
                         storage::delete_route(&paths, &mut config, &path, &expected)?;
-                        Ok(config)
+                        let notice = if state.running {
+                            client.reload().err().map(|e| {
+                                format!("路线已删除；移除服务快捷键失败：{e:#}，请停止或重载服务")
+                            })
+                        } else {
+                            None
+                        };
+                        Ok((config, notice))
                     },
-                    move |v, r, w, cx| match r {
-                        Ok(c) => {
+                    move |v, r, _, cx| match r {
+                        Ok((c, notice)) => {
                             v.cancel_list_drag(cx);
                             v.clear_route_ui(&cleanup_path);
+                            v.routes.retain(|entry| entry.path != cleanup_path);
                             v.config = Some(c);
                             v.document = None;
                             v.selected = None;
                             v.form_pending = false;
                             v.source_pending = false;
-                            v.action(Action::Refresh, w, cx);
+                            if let Some(notice) = notice {
+                                v.daemon_error = Some(notice.clone());
+                                v.error(anyhow::anyhow!(notice));
+                            } else {
+                                v.status = "路线、缓存和快捷键已删除".into();
+                            }
                         }
                         Err(e) => v.error(e),
                     },
@@ -988,54 +999,19 @@ impl Manager {
                     },
                 );
             }
-            Action::Bind | Action::AutoStart => {
-                ensure!(!self.daemon.busy, "执行中不能更改绑定或重载");
-                let mut config = self.config.clone().context("配置不可用")?;
-                if matches!(action, Action::Bind) {
-                    self.flush(cx)?;
-                    let doc = self.document.as_ref().context("请选择路线")?;
-                    ensure!(!doc.dirty(), "请先保存路线，再绑定热键");
-                    let start = self
-                        .text("start", cx)
-                        .parse::<usize>()
-                        .context("起始位置须为整数")?;
-                    ensure!(
-                        start > 0 && start <= doc.route().points.len(),
-                        "起始位置超出点位列表"
-                    );
-                    config
-                        .value
-                        .set_binding(&doc.stem()?, &self.text("hotkey", cx), start)?;
-                } else {
-                    config.value.auto_start_daemon = !config.value.auto_start_daemon;
-                }
-                let client = DaemonClient::new(self.paths.clone());
-                let reload = self.daemon.running;
-                self.worker(
-                    window,
-                    cx,
-                    move || {
-                        config.save()?;
-                        let notice = if reload {
-                            client
-                                .reload()
-                                .err()
-                                .map(|e| format!("配置已保存；重载失败：{e:#}"))
-                        } else {
-                            None
-                        };
-                        Ok((config, notice))
-                    },
-                    |v, r, _, _| match r {
-                        Ok((c, note)) => {
-                            v.config = Some(c);
-                            v.status = note.unwrap_or_else(|| "配置已保存".into()).into();
-                        }
-                        Err(e) => v.error(e),
-                    },
-                );
+            Action::Bind => self.save_start_at(window, cx)?,
+            Action::SetHotkey => self.begin_hotkey_capture(window, cx)?,
+            Action::ClearHotkey => self.clear_hotkey(window, cx)?,
+            Action::ToggleHotkey(stem, enabled) => {
+                self.toggle_route_hotkey(&stem, enabled, window, cx)?;
             }
-            Action::RunPoint(only, runner_ack) => {
+            Action::AutoStart => {
+                ensure!(!self.daemon.busy, "执行中不能更改服务配置");
+                let mut config = self.config.clone().context("配置不可用")?;
+                config.value.auto_start_daemon = !config.value.auto_start_daemon;
+                self.persist_hotkey_config(config, "服务启动设置已保存".into(), false, window, cx);
+            }
+            Action::RunPoint(only) => {
                 self.flush(cx)?;
                 let doc = self.document.as_ref().context("请选择路线")?;
                 ensure!(!doc.dirty(), "有未保存修改，请保存后执行");
@@ -1051,48 +1027,25 @@ impl Manager {
                         && only <= route.points.len(),
                     "起始或单点位置超出点位列表"
                 );
-                ensure!(self.runner.is_none(), "独立 runner 仍在运行，不能重复执行");
+                ensure!(self.daemon.running, "请先启动执行服务");
                 ensure!(
                     !self.daemon.busy && self.daemon_error.is_none(),
-                    "daemon 忙碌或状态未知，请等待状态恢复"
+                    "执行服务忙碌或状态未知，请等待状态恢复"
                 );
-                if !self.daemon.running && !runner_ack {
-                    self.confirmation = Some(Confirmation {
-                        message: "daemon 未运行。使用独立 runner 试跑选中点？".into(),
-                        choices: vec![
-                            ("使用 runner", Action::RunPoint(only, true)),
-                            ("取消", Action::Cancel),
-                        ],
-                    });
-                    return Ok(());
-                }
                 let paths = self.paths.clone();
                 let stem = doc.stem()?;
                 let path = doc.path.clone();
                 let expected = doc.disk_snapshot().clone();
-                let config = self.config.clone().context("配置不可用")?;
                 self.worker(
                     window,
                     cx,
                     move || {
                         ensure!(expected.unchanged(&path)?, "磁盘路线已变化，请重新打开");
-                        let cache = storage::cache_route(&paths, &stem, &route)?;
-                        let client = DaemonClient::new(paths);
-                        if runner_ack {
-                            Ok(Some(client.spawn_runner(
-                                &config.value,
-                                &cache,
-                                start,
-                                only,
-                            )?))
-                        } else {
-                            client.run_route(&stem, start, only)?;
-                            Ok(None)
-                        }
+                        storage::cache_route(&paths, &stem, &route)?;
+                        DaemonClient::new(paths).run_route(&stem, start, only)
                     },
                     |v, r, _, _| match r {
-                        Ok(child) => {
-                            v.runner = child;
+                        Ok(()) => {
                             v.status = "执行请求已受理；完成状态请查看目标窗口和日志".into();
                         }
                         Err(e) => v.error(e),
@@ -1263,7 +1216,7 @@ impl Manager {
         Ok(())
     }
     fn controls_busy(&self) -> bool {
-        self.ui_closing || (self.busy && !self.opening_route)
+        self.ui_closing || self.capture.is_some() || (self.busy && !self.opening_route)
     }
     fn button(
         &self,
@@ -1277,7 +1230,12 @@ impl Manager {
         Button::new(id)
             .label(label)
             .h(gpui_kit::px(32.))
-            .disabled(self.controls_busy() || disabled || self.confirmation.is_some())
+            .disabled(
+                self.controls_busy()
+                    || disabled
+                    || self.confirmation.is_some()
+                    || self.capture.is_some(),
+            )
             .on_click(cx.listener(move |v, _, w, cx| {
                 if matches!(
                     action,

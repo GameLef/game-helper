@@ -215,11 +215,14 @@ function Record-Layout([string]$Label, [bool]$RequireListShare = $true) {
         if (-not (In-Bounds $id $windowBounds)) { throw "Workspace chrome outside window: $id" }
         $measurements[$id] = (Need-Node $id).Current.BoundingRectangle.Height / $scale
     }
-    foreach ($name in @('保存', '起始点', '试跑选中点', '路线热键', '保存绑定')) {
+    foreach ($name in @('保存', '起始点', '试跑选中点', '路线热键', '保存起始点')) {
         $control = Named $name
         if ($null -eq $control) { throw "Missing compact command: $name" }
         $rect = $control.Current.BoundingRectangle
         if ($rect.IsEmpty -or $rect.Left -lt $windowBounds.Left -or $rect.Right -gt $windowBounds.Right -or $rect.Top -lt $windowBounds.Top -or $rect.Bottom -gt $windowBounds.Bottom) { throw "Compact command outside window: $name $rect" }
+    }
+    foreach ($id in @('hotkey-set', 'hotkey-clear', 'hotkey-current')) {
+        if (-not (In-Bounds $id $windowBounds)) { throw "Hotkey command outside window: $id" }
     }
     if ($measurements['workspace-header'] -gt 88 -or $measurements['execution-bar'] -gt 44 -or $measurements['manager-status'] -gt 28 -or $measurements['service-header'] -gt 37) { throw "Workspace chrome exceeds compact height budgets: $($measurements | ConvertTo-Json -Compress)" }
     if ($Label -eq 'manager-default' -and ($measurements.actionToolbar -gt 68 -or $measurements.actionList -lt 598)) { throw 'Default layout did not recover the required 80px of action-list height' }

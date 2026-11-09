@@ -9,7 +9,10 @@ use game_helper_windows::{
 use std::{
     fs,
     process::{Child, Command, Stdio},
-    sync::OnceLock,
+    sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use windows::{
@@ -25,7 +28,8 @@ use windows::{
     core::{PCWSTR, w},
 };
 
-static IDS: OnceLock<[u32; 3]> = OnceLock::new();
+static IDS: OnceLock<[u32; 6]> = OnceLock::new();
+static CAPTURE_OWNER: AtomicUsize = AtomicUsize::new(0);
 static RECORD: OnceLock<std::path::PathBuf> = OnceLock::new();
 static SLEEP_MS: OnceLock<u64> = OnceLock::new();
 static BUSY: OnceLock<bool> = OnceLock::new();
@@ -47,7 +51,38 @@ unsafe extern "system" fn handler(hwnd: HWND, message: u32, wp: WPARAM, lp: LPAR
         }
         return LRESULT(1);
     }
+    if let Some(index) = ids[3..].iter().position(|id| *id == message) {
+        let owner = wp.0;
+        let current = CAPTURE_OWNER.load(Ordering::Acquire);
+        if owner == 0 || lp.0 != 0 || *BUSY.get().unwrap_or(&false) {
+            return LRESULT(0);
+        }
+        let accepted = match index {
+            0 if current == 0 || current == owner => {
+                CAPTURE_OWNER.store(owner, Ordering::Release);
+                true
+            }
+            1 => current == owner,
+            2 if current == 0 || current == owner => {
+                CAPTURE_OWNER.store(0, Ordering::Release);
+                true
+            }
+            _ => false,
+        };
+        if accepted {
+            let record = serde_json::json!({"owner": owner, "operation": index});
+            fs::write(
+                RECORD.get().unwrap().with_extension("capture.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        }
+        return LRESULT(isize::from(accepted));
+    }
     if message == WM_COPYDATA {
+        if CAPTURE_OWNER.load(Ordering::Acquire) != 0 {
+            return LRESULT(0);
+        }
         // SAFETY: WM_COPYDATA marshals this packet from the parent process. Copy
         // its bytes now; never retain the pointer after the native handler returns.
         let packet = unsafe { &*(lp.0 as *const COPYDATASTRUCT) };
@@ -97,6 +132,9 @@ fn helper_server() {
         w!("GameHelperDaemon_Ping"),
         w!("GameHelperDaemon_Reload"),
         w!("GameHelperDaemon_Stop"),
+        w!("GameHelperDaemon_CaptureBegin"),
+        w!("GameHelperDaemon_CaptureRenew"),
+        w!("GameHelperDaemon_CaptureEnd"),
     ];
     IDS.set(names.map(|name| unsafe { RegisterWindowMessageW(name) }))
         .unwrap();
@@ -241,6 +279,42 @@ fn hung_ping_has_bounded_timeout() {
     assert!(client.status().is_err());
     assert!(start.elapsed() < Duration::from_secs(2));
 }
+#[test]
+fn capture_round_trip_preserves_owner_and_rejects_run() {
+    let server = Server::start(0, false);
+    assert!(server.client.capture_begin(0).is_err());
+    server.client.capture_begin(0x1234).unwrap();
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(server.dir.path().join("request.capture.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["owner"], 0x1234);
+    assert_eq!(record["operation"], 0);
+    assert!(!server.client.status().unwrap().busy);
+    assert!(server.client.run_route("route", 1, 1).is_err());
+    assert!(server.client.capture_begin(0x5678).is_err());
+    assert!(server.client.capture_renew(0x5678).is_err());
+    assert!(server.client.capture_end(0x5678).is_err());
+    server.client.capture_renew(0x1234).unwrap();
+    server.client.reload().unwrap();
+    server.client.capture_end(0x1234).unwrap();
+    server.client.capture_end(0x1234).unwrap();
+    assert!(server.client.capture_renew(0x1234).is_err());
+    server.client.run_route("route", 1, 1).unwrap();
+}
+
+#[test]
+fn busy_service_and_absent_service_refuse_capture() {
+    let server = Server::start(0, true);
+    assert!(server.client.capture_begin(123).is_err());
+    let absent = DaemonClient::with_window_title(
+        server.client.paths.clone(),
+        format!("GameHelper.AbsentCapture.{}", std::process::id()),
+    );
+    assert!(absent.capture_begin(123).is_err());
+    assert!(absent.capture_renew(123).is_err());
+    assert!(absent.capture_end(123).is_err());
+}
+
 #[test]
 fn instance_guard_releases_and_separates_modes() {
     let dir = tempfile::tempdir().unwrap();

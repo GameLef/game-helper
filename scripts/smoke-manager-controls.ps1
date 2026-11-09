@@ -202,14 +202,20 @@ try {
  if((Input-Value 'start') -ne '1'){throw 'Save-and-continue did not switch'}
  Click-Node (By-Id 'route-Controls'); Wait-Ready
  if((Input-Value 'point_note') -ne 'saved-switch'){throw 'Save-and-continue lost edits'}
- # StartAt binding persists without starting the daemon or invoking playback.
+ # Save startAt independently; capture/clear have a dedicated UI-only regression.
+ if((By-Id 'bind').Current.Name -ne '保存起始点'){throw 'StartAt command has the wrong label'}
+ foreach($id in @('hotkey-set','hotkey-clear','hotkey-current')){if($null -eq (By-Id $id)){throw "Missing replacement hotkey control: $id"}}
+ if($null -ne (By-Id 'hotkey')){throw 'Removed manual hotkey input remains'}
  Set-Input 'start' '1'
- Click-Node (By-Name '保存绑定'); Wait-Ready
+ Click-Node (By-Id 'bind'); Wait-Ready
  $binding=(Get-Content -Raw -Encoding utf8 (Join-Path $fixture 'config.json')|ConvertFrom-Json).hotkeys.bindings[0]
  if($binding.startAt -ne 1){throw 'StartAt binding not saved'}
+ if($binding.hotkey -ine 'F9' -or $binding.enabled -ne $true){throw 'Saving startAt changed the legacy binding key or enabled state'}
  Set-Input 'start' '999'
- Click-Node (By-Name '保存绑定')
- if((By-Id 'manager-status').Current.Name -notmatch '起始位置超出'){throw 'Invalid startAt not rejected'}
+ Click-Node (By-Id 'bind')
+ if((By-Id 'manager-status').Current.Name -notmatch '起始点超出路线点位'){throw 'Invalid startAt not rejected'}
+ $binding=(Get-Content -Raw -Encoding utf8 (Join-Path $fixture 'config.json')|ConvertFrom-Json).hotkeys.bindings[0]
+ if($binding.startAt -ne 1 -or $binding.hotkey -ine 'F9' -or $binding.enabled -ne $true){throw 'Invalid startAt modified the saved binding'}
  # A missing file must not clear the displayed route.
  $missingSource=(Resolve-Path (Join-Path $fixture 'routes\Other.yaml')).Path
  $missingTarget=[IO.Path]::GetFullPath((Join-Path $fixture ('routes\Other.'+[guid]::NewGuid().ToString('N')+'.missing')))

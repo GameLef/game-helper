@@ -11,12 +11,109 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_P,
+        GetAsyncKeyState, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
+        VK_P,
     },
     WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_HOTKEY},
 };
 
 const HOTKEY_ID: i32 = 0x5C4A;
+
+/// True when every keyboard key, including modifiers, has been released.
+/// Mouse buttons (VK 1..=6) are intentionally excluded.
+pub fn keys_released() -> bool {
+    (8..=254).all(|key| !key_down(key))
+}
+
+/// Currently held nonmodifier key in stable AHK notation. OEM punctuation is
+/// returned before Shift is applied; the caller supplies the modifier state.
+/// If several keys are held, the lowest virtual-key code is returned.
+pub fn pressed_key() -> Option<String> {
+    (8..=254)
+        .find(|key| !is_modifier(*key) && key_down(*key))
+        .map(vk_to_ahk)
+}
+
+fn key_down(key: i32) -> bool {
+    // SAFETY: GetAsyncKeyState only accepts a value, retains no pointers. Its
+    // high bit is current down state; the unreliable low transition bit is ignored.
+    unsafe { GetAsyncKeyState(key) as u16 & 0x8000 != 0 }
+}
+
+fn is_modifier(key: i32) -> bool {
+    matches!(key, 0x10..=0x12 | 0x5b..=0x5c | 0xa0..=0xa5)
+}
+
+fn vk_to_ahk(key: i32) -> String {
+    match key {
+        0x30..=0x39 => (key as u8 as char).to_string(),
+        0x41..=0x5a => (key as u8 as char).to_ascii_lowercase().to_string(),
+        0x60..=0x69 => format!("Numpad{}", key - 0x60),
+        0x70..=0x87 => format!("F{}", key - 0x6f),
+        _ => match key {
+            0x08 => "Backspace",
+            0x09 => "Tab",
+            0x0c => "Clear",
+            0x0d => "Enter",
+            0x13 => "Pause",
+            0x14 => "CapsLock",
+            0x1b => "Escape",
+            0x20 => "Space",
+            0x21 => "PgUp",
+            0x22 => "PgDn",
+            0x23 => "End",
+            0x24 => "Home",
+            0x25 => "Left",
+            0x26 => "Up",
+            0x27 => "Right",
+            0x28 => "Down",
+            0x2c => "PrintScreen",
+            0x2d => "Insert",
+            0x2e => "Delete",
+            0x5d => "AppsKey",
+            0x6a => "NumpadMult",
+            0x6b => "NumpadAdd",
+            0x6d => "NumpadSub",
+            0x6e => "NumpadDot",
+            0x6f => "NumpadDiv",
+            0x90 => "NumLock",
+            0x91 => "ScrollLock",
+            0xba => ";",
+            0xbb => "=",
+            0xbc => ",",
+            0xbd => "-",
+            0xbe => ".",
+            0xbf => "/",
+            0xc0 => "`",
+            0xdb => "[",
+            0xdc => "\\",
+            0xdd => "]",
+            0xde => "'",
+            _ => return format!("vk{key:02X}"),
+        }
+        .into(),
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::{is_modifier, vk_to_ahk};
+
+    #[test]
+    fn capture_maps_physical_punctuation_before_shift() {
+        assert_eq!(vk_to_ahk(0xbb), "=");
+        assert_eq!(vk_to_ahk(0xbd), "-");
+        assert_eq!(vk_to_ahk(0xde), "'");
+        assert_eq!(vk_to_ahk(0xdc), "\\");
+        assert_eq!(vk_to_ahk(0x31), "1");
+        assert_eq!(vk_to_ahk(0x41), "a");
+        assert_eq!(vk_to_ahk(0x87), "F24");
+        assert_eq!(vk_to_ahk(0xe2), "vkE2");
+        assert!(is_modifier(0xa3));
+        assert!(is_modifier(0x5c));
+        assert!(!is_modifier(0x0d));
+    }
+}
 
 /// A press sequence; a gap indicates dropped events when the UI was backlogged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

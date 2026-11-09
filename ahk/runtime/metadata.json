@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "name": "AutoHotkey",
+  "version": "2.0.31",
+  "architecture": "x64",
+  "variant": "standard",
+  "hashAlgorithm": "SHA256",
+  "binaryArchive": {
+    "url": "https://github.com/AutoHotkey/AutoHotkey/releases/download/v2.0.31/AutoHotkey_2.0.31.zip",
+    "sha256": "CA1A595ACA4528755D8D4CD7FED23D497A37BD9A0B6892072612D68DEE1BD00A"
+  },
+  "source": {
+    "url": "https://codeload.github.com/AutoHotkey/AutoHotkey/zip/9cebeeb1823a07ca03983ade5164a4f533753519",
+    "tag": "v2.0.31",
+    "tagObject": "55c7ac269a3315cc8e27be74b9461163dddef82c",
+    "commit": "9cebeeb1823a07ca03983ade5164a4f533753519",
+    "sha256": "C917929A8E19681A166B518603DCF846A3C05800DBBBE7292C1C343A520A2303"
+  },
+  "license": {
+    "path": "license.txt",
+    "description": "Unmodified complete upstream license, including GNU GPL version 2 and PCRE BSD license. The complete corresponding source and build project are supplied in source.zip."
+  },
+  "files": [
+    {
+      "path": "AutoHotkey64.exe",
+      "sha256": "5073EE85DA091653C7C6CE32CACDA3A0B4BFB51649823C10015BA0BD71ACB73C"
+    },
+    {
+      "path": "license.txt",
+      "sha256": "B27C1A7C92686E47F8740850AD24877A50BE23FD3DBD44EDEE50AC1223135E38"
+    },
+    {
+      "path": "source.zip",
+      "sha256": "C917929A8E19681A166B518603DCF846A3C05800DBBBE7292C1C343A520A2303"
+    }
+  ]
+}

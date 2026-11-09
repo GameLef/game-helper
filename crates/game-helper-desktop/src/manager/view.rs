@@ -8,6 +8,7 @@ use gpui_kit::component::{
     input::{Editor, Input},
     menu::{DropdownMenu, PopupMenuItem},
     select::Select,
+    switch::Switch,
 };
 use gpui_kit::{
     Div, FontWeight, InteractiveElement, ParentElement, StatefulInteractiveElement, Styled, div, px,
@@ -232,12 +233,14 @@ impl Manager {
             }
             visible += 1;
             let selected = self.document.as_ref().is_some_and(|d| d.path == entry.path);
-            let binding = self
+            let route_binding = self
                 .config
                 .as_ref()
-                .and_then(|c| c.value.binding_for(&entry.stem))
-                .map(|b| b.hotkey.as_str())
-                .unwrap_or("未绑定");
+                .and_then(|c| c.value.binding_for(&entry.stem));
+            let binding = route_binding
+                .map(|b| game_helper_core::config::hotkey_display(&b.hotkey))
+                .unwrap_or_else(|| "未绑定".into());
+            let enabled = route_binding.is_some_and(|b| b.enabled);
             let file = format!("{}.yaml", entry.stem);
             let detail = format!(
                 "{}\n{}\n{} 个点位 · {}{}",
@@ -303,27 +306,81 @@ impl Manager {
                 .foreground(color(TEXT))
                 .hover(color(CANVAS))
                 .active(color(LIST_SELECTED));
+            let stem = entry.stem.clone();
+            let switch_disabled = self.controls_busy()
+                || self.config.is_none()
+                || self.confirmation.is_some()
+                || self.capture.is_some()
+                || self.daemon.busy
+                || self.daemon_error.is_some()
+                || route_binding.is_none()
+                || (entry.error.is_some() && !enabled);
             entries = entries.child(
-                self.button(
-                    ("route", i),
-                    "",
-                    Action::Open(entry.path.clone()),
-                    false,
-                    cx,
-                )
-                .accessibility_id(format!("route-{}", entry.stem))
-                .accessibility_label(format!("{} {}", entry.stem, detail.replace('\n', "，")))
-                .tooltip(tooltip)
-                .custom(variant)
-                .selected(selected)
-                .w_full()
-                .h(px(48.))
-                .flex_shrink_0()
-                .px_2()
-                .py_1()
-                .border_l_2()
-                .border_color(color(if selected { EMPHASIS } else { SURFACE }))
-                .child(title),
+                row()
+                    .gap(px(4.))
+                    .w_full()
+                    .child(
+                        self.button(
+                            ("route", i),
+                            "",
+                            Action::Open(entry.path.clone()),
+                            false,
+                            cx,
+                        )
+                        .accessibility_id(format!("route-{}", entry.stem))
+                        .accessibility_label(format!(
+                            "{} {}",
+                            entry.stem,
+                            detail.replace('\n', "，")
+                        ))
+                        .tooltip(tooltip)
+                        .custom(variant)
+                        .selected(selected)
+                        .w_full()
+                        .h(px(48.))
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_1()
+                        .border_l_2()
+                        .border_color(color(if selected { EMPHASIS } else { SURFACE }))
+                        .flex_1()
+                        .min_w_0()
+                        .child(title),
+                    )
+                    .child(
+                        div()
+                            .id(format!("route-hotkey-{}", entry.stem))
+                            .accessibility_id(format!("route-hotkey-{}", entry.stem))
+                            .role(gpui_kit::Role::Group)
+                            .aria_label(format!("{} 快捷键设置", entry.name))
+                            .flex_shrink_0()
+                            .px_1()
+                            .child(
+                                Switch::new(("route-switch", i))
+                                    .small()
+                                    .checked(enabled)
+                                    .disabled(switch_disabled)
+                                    .accessibility_label(format!("{} 快捷键开关", entry.name))
+                                    .tooltip(if route_binding.is_none() {
+                                        "请先设置快捷键"
+                                    } else if entry.error.is_some() && !enabled {
+                                        "请先修复并保存路线"
+                                    } else if enabled {
+                                        "关闭此路线的快捷键"
+                                    } else {
+                                        "开启此快捷键，并关闭其他同键路线"
+                                    })
+                                    .on_change(cx.listener(
+                                        move |view, checked: &bool, window, cx| {
+                                            view.action(
+                                                Action::ToggleHotkey(stem.clone(), *checked),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                            ),
+                    ),
             );
         }
         if visible == 0 {
@@ -1427,18 +1484,13 @@ impl Manager {
                             ),
                     )
                     .child(muted(details))
-                    .child(muted(
-                        "停止服务不会停止独立执行进程；正在回放时使用急停键。",
-                    )),
+                    .child(muted("所有路线通过执行服务回放；正在回放时可使用急停键。")),
             );
         }
         header
     }
 
     fn execution_progress(&self) -> String {
-        if self.runner.is_some() {
-            return "独立执行进程运行中".into();
-        }
         self.document
             .as_ref()
             .and_then(|d| d.stem().ok())
@@ -1455,8 +1507,19 @@ impl Manager {
             .map(|c| c.value.hotkeys.stop_all.as_str())
             .unwrap_or("F12");
         let disabled =
-            !has_doc || self.daemon.busy || self.daemon_error.is_some() || self.runner.is_some();
-        let inputs_disabled = !has_doc || self.controls_busy() || self.confirmation.is_some();
+            !has_doc || !self.daemon.running || self.daemon.busy || self.daemon_error.is_some();
+        let inputs_disabled = !has_doc
+            || self.controls_busy()
+            || self.confirmation.is_some()
+            || self.capture.is_some();
+        let binding = self
+            .document
+            .as_ref()
+            .and_then(|doc| doc.stem().ok())
+            .and_then(|stem| self.config.as_ref()?.value.binding_for(&stem));
+        let hotkey_text = binding
+            .map(|b| game_helper_core::config::hotkey_display(&b.hotkey))
+            .unwrap_or_else(|| "未设置".into());
         row()
             .id("execution-bar")
             .accessibility_id("execution-bar")
@@ -1494,7 +1557,7 @@ impl Manager {
                         self.button(
                             "only",
                             "试跑选中点",
-                            Action::RunPoint(self.selected.map(|i| i + 1).unwrap_or(0), false),
+                            Action::RunPoint(self.selected.map(|i| i + 1).unwrap_or(0)),
                             disabled || self.selected.is_none(),
                             cx,
                         )
@@ -1509,34 +1572,54 @@ impl Manager {
                     .child(muted("路线热键"))
                     .child(
                         div()
-                            .id("hotkey-binding-field")
-                            .accessibility_id("hotkey-binding-field")
-                            .role(gpui_kit::Role::Group)
-                            .aria_label("路线热键输入区域")
-                            .w(px(124.))
-                            .tooltip(|w, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(
-                                    "热键留空后保存绑定，可解除此路线的热键绑定",
-                                )
-                                .build(w, cx)
-                            })
-                            .child(Styled::h(
-                                Input::new(&self.fields["hotkey"])
-                                    .accessibility_id("hotkey")
-                                    .aria_label("路线热键")
-                                    .small()
-                                    .disabled(inputs_disabled),
-                                px(32.),
-                            )),
+                            .id("hotkey-current")
+                            .accessibility_id("hotkey-current")
+                            .role(gpui_kit::Role::Status)
+                            .aria_label(format!("当前快捷键 {hotkey_text}"))
+                            .max_w(px(120.))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .whitespace_nowrap()
+                            .text_size(px(12.))
+                            .child(hotkey_text),
+                    )
+                    .child(
+                        self.button(
+                            "hotkey-set",
+                            if binding.is_some() {
+                                "修改快捷键"
+                            } else {
+                                "设置快捷键"
+                            },
+                            Action::SetHotkey,
+                            !has_doc || self.daemon.busy || self.daemon_error.is_some(),
+                            cx,
+                        )
+                        .accessibility_id("hotkey-set")
+                        .track_focus(&self.hotkey_button_focus)
+                        .small(),
+                    )
+                    .child(
+                        self.button(
+                            "hotkey-clear",
+                            "清除",
+                            Action::ClearHotkey,
+                            binding.is_none() || self.daemon.busy || self.daemon_error.is_some(),
+                            cx,
+                        )
+                        .accessibility_id("hotkey-clear")
+                        .ghost()
+                        .small(),
                     )
                     .child(
                         self.button(
                             "bind",
-                            "保存绑定",
+                            "保存起始点",
                             Action::Bind,
-                            !has_doc || self.daemon.busy,
+                            binding.is_none() || self.daemon.busy || self.daemon_error.is_some(),
                             cx,
                         )
+                        .accessibility_id("bind")
                         .small(),
                     ),
             )
@@ -1557,6 +1640,110 @@ impl Manager {
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(stop_key.to_owned()),
+                    ),
+            )
+    }
+
+    fn hotkey_dialog(&self, cx: &Context<Self>) -> impl IntoElement {
+        let capture = self.capture.as_ref().expect("capture dialog");
+        let current = capture
+            .candidate
+            .as_ref()
+            .map(|key| game_helper_core::config::hotkey_display(key))
+            .unwrap_or_else(|| {
+                let mut modifiers = Vec::new();
+                if capture.modifiers.control {
+                    modifiers.push("Ctrl");
+                }
+                if capture.modifiers.alt {
+                    modifiers.push("Alt");
+                }
+                if capture.modifiers.shift {
+                    modifiers.push("Shift");
+                }
+                if capture.modifiers.platform {
+                    modifiers.push("Win");
+                }
+                if modifiers.is_empty() {
+                    "等待按键…".into()
+                } else {
+                    format!("{} + …", modifiers.join(" + "))
+                }
+            });
+        let hint = if capture.saving {
+            "正在保存快捷键…"
+        } else if !capture.armed {
+            "请先松开按键，再输入快捷键"
+        } else if capture.candidate.is_some() {
+            "已捕获，请松开按键"
+        } else {
+            "请按下一个按键，或 Ctrl / Alt / Shift / Win 与按键的组合"
+        };
+        div()
+            .id("hotkey-backdrop")
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(gpui_kit::rgba(SCRIM))
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_5()
+            .child(
+                column()
+                    .id("hotkey-dialog")
+                    .accessibility_id("hotkey-dialog")
+                    .role(gpui_kit::Role::Dialog)
+                    .aria_label("设置快捷键，请按下快捷键")
+                    .occlude()
+                    .w_full()
+                    .max_w(px(500.))
+                    .gap_4()
+                    .p_5()
+                    .bg(color(SURFACE))
+                    .border_1()
+                    .border_color(color(BORDER))
+                    .rounded(px(8.))
+                    .child(heading("请按下快捷键"))
+                    .child(
+                        div()
+                            .id("hotkey-capture-value")
+                            .accessibility_id("hotkey-capture-value")
+                            .role(gpui_kit::Role::Status)
+                            .aria_label(current.clone())
+                            .text_size(px(24.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .px_4()
+                            .py_3()
+                            .rounded(px(6.))
+                            .bg(color(CANVAS))
+                            .child(current),
+                    )
+                    .child(muted(hint))
+                    .child(muted(
+                        "捕获后自动保存；Esc 取消。录制期间路线热键临时停用，急停键仍有效。",
+                    ))
+                    .children(capture.error.as_ref().map(|error| {
+                        div()
+                            .id("hotkey-capture-error")
+                            .role(gpui_kit::Role::Alert)
+                            .aria_label(error.clone())
+                            .text_color(color(DANGER))
+                            .text_size(px(12.))
+                            .child(error.clone())
+                    }))
+                    .child(
+                        row().justify_end().child(
+                            Button::new("hotkey-capture-cancel")
+                                .accessibility_id("hotkey-capture-cancel")
+                                .label("取消")
+                                .ghost()
+                                .track_focus(&self.capture_focus)
+                                .disabled(capture.saving)
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.cancel_hotkey_capture(window, cx)
+                                })),
+                        ),
                     ),
             )
     }
@@ -1724,6 +1911,9 @@ impl Manager {
                     ),
             );
         }
+        if self.capture.is_some() {
+            root = root.child(gpui_kit::deferred(self.hotkey_dialog(cx)).with_priority(3));
+        }
         if self.confirmation.is_some() {
             root = root.child(gpui_kit::deferred(self.confirmation_dialog(cx)).with_priority(2));
         }
@@ -1758,6 +1948,10 @@ impl Manager {
             )
             .capture_key_down(
                 cx.listener(|view, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if view.capture.is_some() {
+                        view.capture_key_down(event, window, cx);
+                        return;
+                    }
                     if event.keystroke.key == "escape" {
                         if view.drag.is_some() || view.point_drag.is_some() {
                             view.cancel_list_drag(cx);

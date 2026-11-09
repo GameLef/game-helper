@@ -1,9 +1,11 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([string]$AutoHotkey = 'C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe')
+param([string]$AutoHotkey = '')
 # Real input is restricted to an owned, empty WinForms target. No Rust GUI is launched.
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ([string]::IsNullOrWhiteSpace($AutoHotkey)) { $AutoHotkey = Join-Path $projectRoot 'ahk\runtime\AutoHotkey64.exe' }
+$AutoHotkey = [IO.Path]::GetFullPath($AutoHotkey)
 $fixture = Join-Path $projectRoot ('.tools\native-drag-' + [guid]::NewGuid().ToString('N'))
 $utf8 = [Text.UTF8Encoding]::new($false)
 $owned = [Collections.Generic.List[Diagnostics.Process]]::new()
@@ -59,7 +61,7 @@ $target = $null
 $targetHwnd = [IntPtr]::Zero
 try {
     Assert (Test-Path -LiteralPath $AutoHotkey) 'AutoHotkey v2 executable missing'
-    foreach ($name in @('runner.ahk', 'lib\executor.ahk', 'lib\JSON.ahk')) {
+    foreach ($name in @('lib\executor.ahk', 'lib\JSON.ahk')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot "ahk\$name") -Destination (Join-Path $fixture "ahk\$name")
     }
     $daemon = [IO.File]::ReadAllText((Join-Path $projectRoot 'ahk\daemon.ahk'))
@@ -159,15 +161,30 @@ $form.add_Shown({ [IO.File]::WriteAllText($Ready, [string]$form.Handle); $form.A
         $results.Add($result)
         return $result
     }
+    $daemonProcess = Launch $AutoHotkey @('/ErrorStdOut',('"'+(Join-Path $fixture 'ahk\daemon.ahk')+'"')) 'daemon'
+    $script:daemonHwnd = [IntPtr]::Zero
+    Wait-For 'isolated daemon hidden window' { $script:daemonHwnd=[NativeDragSmoke]::FindWindow([IntPtr]::Zero,$daemonTitle); $script:daemonHwnd -ne [IntPtr]::Zero -or $daemonProcess.HasExited }
+    Assert (-not $daemonProcess.HasExited) 'Isolated daemon exited during startup'
+    [NativeDragSmoke]::GetWindowThreadProcessId($daemonHwnd,[ref]$windowPid) | Out-Null
+    Assert ($windowPid -eq $daemonProcess.Id) 'Daemon HWND ownership mismatch'
+    $ping = [NativeDragSmoke]::RegisterWindowMessage('GameHelperDaemon_Ping')
+    function Daemon-Idle {
+        [UIntPtr]$reply = [UIntPtr]::Zero
+        $sent = [NativeDragSmoke]::SendMessageTimeout($daemonHwnd,$ping,[IntPtr]::Zero,[IntPtr]::Zero,2,3000,[ref]$reply)
+        Assert ($sent -ne [IntPtr]::Zero) 'Isolated daemon Ping failed'
+        Assert (($reply.ToUInt64() -shr 1) -eq 0) 'Isolated daemon registered unexpected route hotkeys'
+        return ($reply.ToUInt64() -band 1) -eq 0
+    }
+    Wait-For 'isolated daemon ready' { Daemon-Idle }
     foreach ($case in @(
-        @{name='runner-default';speed=$null},
-        @{name='runner-speed0';speed=0},
-        @{name='runner-speed40';speed=40},
-        @{name='runner-identical';speed=15;identical=$true},
-        @{name='runner-disabled';speed=0;distance=0},
-        @{name='runner-short';speed=0;short=$true},
-        @{name='runner-custom';speed=0;distance=32;delay=180;preSpeed=20},
-        @{name='runner-zero-delay';speed=0;delay=0}
+        @{name='daemon-default';speed=$null},
+        @{name='daemon-speed0';speed=0},
+        @{name='daemon-speed40';speed=40},
+        @{name='daemon-identical';speed=15;identical=$true},
+        @{name='daemon-disabled';speed=0;distance=0},
+        @{name='daemon-short';speed=0;short=$true},
+        @{name='daemon-custom';speed=0;distance=32;delay=180;preSpeed=20},
+        @{name='daemon-zero-delay';speed=0;delay=0}
     )) {
         $op = @{type='drag_native';from=@(0.2,0.2);to=@(0.8,0.8)}
         if ($null -ne $case.speed) { $op.speed=$case.speed }
@@ -181,16 +198,17 @@ $form.add_Shown({ [IO.File]::WriteAllText($Ready, [string]$form.Handle); $form.A
         Route $case.name @($op)
         Foreground-Target
         $before = @(Events).Count
-        $p = Launch $AutoHotkey @('/ErrorStdOut',('"'+(Join-Path $fixture 'ahk\runner.ahk')+'"'),('"'+(Join-Path $fixture "routes\_cache\$($case.name).json")+'"'),'--stop','^!+F24') $case.name
-        Wait-For "$($case.name) exit" { $p.HasExited } 20000
-        Assert ($p.ExitCode -eq 0) "$($case.name) runner failed: $($p.ExitCode)"
+        Wait-For "$($case.name) daemon idle before request" { Daemon-Idle }
+        $payload = @{route=$case.name;startAt=1;only=1} | ConvertTo-Json -Compress
+        $accepted = [NativeDragSmoke]::Run($daemonHwnd,$payload)
+        Assert ($accepted -eq 1) "$($case.name) daemon rejected the run request"
         $expectedX = if ($case.short) {168} else {639}
         $expectedY = if ($case.short) {101} else {383}
         $null = Verify-Drag $case.name $before ([bool]$case.identical) $expectedDistance $expectedDelay $expectedX $expectedY
-        Start-Sleep -Milliseconds 1100 # runner log names have second precision; preserve each case separately.
+        Wait-For "$($case.name) daemon idle after playback" { Daemon-Idle } 20000
     }
-    $fast = $results | Where-Object name -eq runner-speed0
-    $slow = $results | Where-Object name -eq runner-speed40
+    $fast = $results | Where-Object name -eq daemon-speed0
+    $slow = $results | Where-Object name -eq daemon-speed40
     Assert ($slow.moveEvents -gt ($fast.moveEvents+3)) 'Nonzero native speed did not expose intermediate cursor positions'
     Assert ($slow.downUpMs -gt ($fast.downUpMs+100)) 'Nonzero speed did not take measurably longer than speed 0'
     # This harness includes the unmodified real executor and checks per-thread send mode and stop semantics.
@@ -301,23 +319,14 @@ ExitApp(0)
     Start-Sleep -Milliseconds 1100
     Route 'daemon-native' @(@{type='drag_native';from=@(0.2,0.2);to=@(0.8,0.8);speed=20})
     Foreground-Target
-    $daemonProcess = Launch $AutoHotkey @('/ErrorStdOut',('"'+(Join-Path $fixture 'ahk\daemon.ahk')+'"')) 'daemon'
-    $script:daemonHwnd = [IntPtr]::Zero
-    Wait-For 'isolated daemon hidden window' { $script:daemonHwnd=[NativeDragSmoke]::FindWindow([IntPtr]::Zero,$daemonTitle); $script:daemonHwnd -ne [IntPtr]::Zero -or $daemonProcess.HasExited }
-    Assert (-not $daemonProcess.HasExited) 'Isolated daemon exited during startup'
-    [NativeDragSmoke]::GetWindowThreadProcessId($daemonHwnd,[ref]$windowPid) | Out-Null
-    Assert ($windowPid -eq $daemonProcess.Id) 'Daemon HWND ownership mismatch'
-    $ping = [NativeDragSmoke]::RegisterWindowMessage('GameHelperDaemon_Ping')
-    [UIntPtr]$pingReply = [UIntPtr]::Zero
-    $pingOk = [NativeDragSmoke]::SendMessageTimeout($daemonHwnd,$ping,[IntPtr]::Zero,[IntPtr]::Zero,2,3000,[ref]$pingReply)
-    Assert ($pingOk -ne [IntPtr]::Zero -and $pingReply.ToUInt64() -eq 0) 'Daemon ping failed or regular hotkeys registered'
+    Wait-For 'isolated daemon idle before final playback' { Daemon-Idle }
     Foreground-Target
     $before = @(Events).Count
     $accepted = [NativeDragSmoke]::Run($daemonHwnd,'{"route":"daemon-native","startAt":1,"only":0}')
     Assert ($accepted -eq 1) 'Daemon WM_COPYDATA run was rejected'
     $null = Verify-Drag 'daemon-native' $before
     Assert ([NativeDragSmoke]::FindWindow([IntPtr]::Zero,'game_helper_daemon_v2') -eq $existingDaemon) 'Existing user daemon window changed'
-    $summary = [ordered]@{passed=$true;fixture=$fixture;interpreter=$AutoHotkey;targetPid=$target.Id;daemonPid=$daemonProcess.Id;existingDaemonUnchanged=$true;runnerHash=(Get-FileHash (Join-Path $fixture 'ahk\runner.ahk')).Hash;executorHash=(Get-FileHash (Join-Path $fixture 'ahk\lib\executor.ahk')).Hash;cases=@($results);harness=$harnessReport}
+    $summary = [ordered]@{passed=$true;fixture=$fixture;interpreter=$AutoHotkey;targetPid=$target.Id;daemonPid=$daemonProcess.Id;existingDaemonUnchanged=$true;daemonHash=(Get-FileHash (Join-Path $fixture 'ahk\daemon.ahk')).Hash;executorHash=(Get-FileHash (Join-Path $fixture 'ahk\lib\executor.ahk')).Hash;cases=@($results);harness=$harnessReport}
     Put 'summary.json' ($summary | ConvertTo-Json -Depth 12)
     $summary | ConvertTo-Json -Depth 12
 } catch {

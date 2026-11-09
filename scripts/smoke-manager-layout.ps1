@@ -40,6 +40,13 @@ function Assert-Control($name) {
  $b=$root.Current.BoundingRectangle
  if($r.IsEmpty -or $r.Left -lt $b.Left -or $r.Right -gt $b.Right -or $r.Top -lt $b.Top -or $r.Bottom -gt $b.Bottom){throw "Control outside window: $name $r, window $b"}
 }
+function Assert-ControlId($id) {
+  $node=Node ([Windows.Automation.AutomationElement]::AutomationIdProperty) $id
+  if($null -eq $node){throw "Missing critical control id: $id"}
+  $r=$node.Current.BoundingRectangle
+  $b=$root.Current.BoundingRectangle
+  if($r.IsEmpty -or $r.Left -lt $b.Left -or $r.Right -gt $b.Right -or $r.Top -lt $b.Top -or $r.Bottom -gt $b.Bottom){throw "Control outside window: $id $r, window $b"}
+}
 function Assert-Absent($name) {
  if($null -ne (Node ([Windows.Automation.AutomationElement]::NameProperty) $name)){throw "Removed control is still present: $name"}
 }
@@ -56,8 +63,9 @@ if($root.Current.Name -match 'Game Helper'){throw 'Brand remains in native title
 Assert-Control '保存'
 Assert-Absent '执行路线'
 Assert-Control '起始点'
-Assert-Control '保存绑定'
+Assert-Control '保存起始点'
 Assert-Control '试跑选中点'
+foreach($id in @('hotkey-set','hotkey-clear','hotkey-current')){Assert-ControlId $id}
 Click-Id 'point-0'
 if((Node ([Windows.Automation.AutomationElement]::NameProperty) '上移').Current.IsEnabled){throw 'First point must not move upward'}
 Capture 'manager-default'
@@ -70,9 +78,10 @@ if($null -ne (Node ([Windows.Automation.AutomationElement]::NameProperty) '搜�
 Assert-Control '保存'
 Assert-Absent '执行路线'
 Assert-Control '起始点'
-Assert-Control '保存绑定'
+Assert-Control '保存起始点'
 Assert-Control '试跑选中点'
-Assert-Control '保存绑定'
+foreach($id in @('hotkey-set','hotkey-clear','hotkey-current')){Assert-ControlId $id}
+Assert-Control '保存起始点'
 Capture 'manager-compact'
 Click-Name '路线库'
 if($null -eq (Node ([Windows.Automation.AutomationElement]::NameProperty) '搜索名称或文件名')){throw 'Compact route library toggle unavailable'}

@@ -1,6 +1,24 @@
 # 路线管理器界面重设计
 
-Rust + GPUI Kit 0.9.0 原生管理器的浅粉路线编排工作台。通过 `start.bat` 统一启动 Rust 客户端；Python 客户端与回退入口已删除。现有 AHK v2 daemon/runner 继续作为执行后端。
+Rust + GPUI Kit 0.9.0 原生管理器的浅粉路线编排工作台。通过 `start.bat` 统一启动 Rust 客户端；Python 客户端与回退入口已删除。项目内置 AHK v2.0.31，daemon 服务统一负责回放。
+
+## 路线快捷键开关与服务执行
+
+路线列表中，每项右侧显示独立 Switch，启用状态写入 `config.json` 的 `hotkeys.bindings[].enabled`，重启后恢复。切换开关不会触发路线选择或提交当前草稿；未绑定时保持关闭并提示先设置快捷键。不同路线可以使用同一快捷键，最后开启的路线生效，其他同键路线自动关闭并保留原绑定；关闭胜出路线不会恢复之前被关闭的路线。旧配置未包含 `enabled` 的绑定默认开启。
+
+执行栏不提供手动快捷键输入框。点击“设置快捷键”打开监听弹窗，按下一个按键或组合键后自动保存并关闭弹窗；新绑定默认关闭，修改已有绑定保留原开关状态，已开启时应用同键互斥。取消保留原设置，清除按钮移除绑定。当前快捷键单独展示，“保存起始点”只保存单步起始位置。监听时仅按修饰键不会完成录制。
+
+所有按钮试跑与全局热键回放都通过 AHK 服务完成。服务未运行时禁用试跑并提示启动服务；配置写入、服务忙碌或状态未知时避免竞争操作。开关关闭只影响路线快捷键，服务就绪时仍可按钮试跑。服务控制提供启动、停止与重载，关闭管理器后服务继续运行。
+
+自动化稳定 ID：设置/清除/当前快捷键分别为 `hotkey-set`、`hotkey-clear`、`hotkey-current`，监听弹窗与取消按钮为 `hotkey-dialog`、`hotkey-capture-cancel`；路线 Switch 的容器为 `route-hotkey-{stem}`，开关自身通过可访问 TogglePattern 操作。`bind` 保留用于“保存起始点”。
+
+[快捷键 UI 回归](../scripts/smoke-manager-hotkeys.ps1) 使用唯一隔离目录和关闭服务自启的配置，检查捕获/取消/清除、同键开关互斥、起始点独立保存及重启恢复。录制消息仅投递到测试窗口，不发送全局键盘输入。脚本不请求回放；离线断言要求无正在运行的生产服务，检测到服务会停止检查。本轮 Release 的隔离回归已 exit 0，覆盖捕获/取消/清除、旧绑定默认开启、同键最后开启者胜出、不自动恢复、开关不选择路线、起始点独立保存及重启恢复；证据见[本轮快捷键回归摘要](../.tools/manager-hotkeys-5e8fa5bef82646c4987b8d9bf57a4d67/summary.json)。此回归没有请求回放：
+
+```powershell
+
+pwsh -NoProfile -File scripts\smoke-manager-hotkeys.ps1 -Executable target\release\game-helper.exe
+
+```
 
 ## 动作编排与展开状态持久化（2026-11-09）
 
@@ -21,9 +39,13 @@ Rust + GPUI Kit 0.9.0 原生管理器的浅粉路线编排工作台。通过 `st
 96 DPI、路线属性及服务详情收起时的最终实测：
 
 | 客户区及路线库状态 | 动作工具栏高度 | 动作列表高度 | 相对上一版增加 |
+
 |---|---:|---:|---:|
+
 | 1280×900，路线库展开 | 35 DIP | 712 DIP | 31 DIP |
+
 | 900×640，路线库收起 | 35 DIP | 452 DIP | 31 DIP |
+
 | 900×640，路线库展开 | 35 DIP | 452 DIP | 62 DIP |
 
 文件操作展开后，三个按钮均为 32 DIP 且同一基线；小窗口动作列表仍有 399 DIP。默认及紧凑窗口保留路线/点位 48/36 DIP 行高与 2 DIP 间隔。实际截图已目视复核：[默认三栏](assets/native-manager-sequence-default.png)、[小窗口](assets/native-manager-sequence-compact.png)、[文件操作](assets/native-manager-sequence-files.png)。本轮未覆盖多 DPI、多显示器或真实游戏回放。
@@ -38,14 +60,18 @@ Rust + GPUI Kit 0.9.0 原生管理器的浅粉路线编排工作台。通过 `st
 
 路线名称、文件名、保存状态、编辑模式与路线操作合并到顶部紧凑命令栏。保存状态紧跟文件名，保留 8 DIP 间隔；长名称和文件名省略并提供全文提示，保存状态保持完整。窄窗口按组换行，保存按钮保持可用。路线属性仍按需展开，缺少目标条件时自动展开；展开区最多 160px，超出后在区内滚动。文件操作继续按需展开。
 
-底部执行区域合并为一行起始点、选中点试跑、路线热键、保存绑定和真实急停键。起始点、路线热键输入框通过 `Styled::h` 将完整外框固定为 32 DIP，与相邻按钮等高；保留小号文字。组件的预设高度随主题字号缩放，`Input::h` 又仅作用于多行模式，因此不依赖这两种接口设置单行控件高度。热键解除说明移至输入框提示；单步进度及独立执行状态移入最底部状态栏。状态消息保持单行、全文可悬停查看，错误时优先显示错误反馈，进度仍包含在可访问名称中。控件和输入实体沿用原有动作与状态，不改变路线、配置或 AHK IPC。
+底部执行区域提供起始点、“保存起始点”、选中点试跑、当前快捷键、“设置快捷键”、清除按钮和真实急停键。快捷键使用监听弹窗捕获，新绑定默认关闭，修改已有绑定保留开关状态，不使用手动输入框。起始点输入框通过 `Styled::h` 将完整外框固定为 32 DIP，与相邻按钮等高；保留小号文字。单步进度显示在最底部状态栏。状态消息保持单行、全文可悬停查看，错误时优先显示错误反馈，进度仍包含在可访问名称中。起始点与动作参数沿用已有输入实体；路线格式及 AHK IPC 不变，快捷键启用状态保存在配置中。
 
 以下为同一套 36 个动作隔离数据、相同面板宽度、属性及服务详情收起、96 DPI 下的 UI Automation 实测。窗口尺寸指客户区，像素值在此等于 DIP：
 
 | 客户区及路线库状态 | 调整前动作列表 | 调整后动作列表 | 增加高度 | 调整后动作工具栏 |
+
 |---|---:|---:|---:|---:|
+
 | 1280×900，路线库展开 | 518px | 681px | **163px** | 66px |
+
 | 900×640，路线库收起 | 258px | 421px | **163px** | 66px |
+
 | 900×640，路线库展开 | 223px | 390px | **167px** | 97px，添加按钮换行 |
 
 三种布局的服务栏均为 35px、路线命令栏 53px、执行栏 39px、状态栏 26px。动作列表在“动作工具栏＋列表”中的占比分别为 91.2%、86.4%、80.1%；这些比例不是整个窗口的占比。
@@ -55,12 +81,19 @@ Rust + GPUI Kit 0.9.0 原生管理器的浅粉路线编排工作台。通过 `st
 [动作交互回归](../scripts/smoke-manager-actions.ps1)新增顶部、执行栏、状态栏高度和关键控件边界检查，并保存各尺寸的 JSON 测量记录。当前 Release 已通过该回归：七类动作、长列表新增定位、折叠、排序、名称及参数保留、保存、YAML 往返、路线切换和重启恢复。工作区 **88 项测试通过**，另有 1 个由父测试启动的私有子进程入口保持 ignored；编译检查和 Release 构建通过，保留既有文档警告。控件回归也已通过，包括中文下拉选项、坐标与起始点保留、范围提示和路线切换保护。
 
 ```powershell
+
 scripts\cargo.cmd check --workspace --locked
+
 scripts\cargo.cmd test --workspace --locked
+
 scripts\cargo.cmd fmt --all -- --check
+
 scripts\cargo.cmd build -p game-helper-desktop --release --locked
+
 pwsh -NoProfile -File scripts\smoke-manager-actions.ps1 -Executable target\release\game-helper.exe -CaptureScreenshots
+
 pwsh -NoProfile -File scripts\smoke-manager-controls.ps1 -Executable target\release\game-helper.exe
+
 ```
 
 [紧凑边界回归](../scripts/smoke-manager-density.ps1)也已通过空路线库欢迎页、长路线名 / 点位名 / 文件名、默认及小窗口路线库切换、文件操作、表单 / YAML 往返、零点位、900 字符以上完整校验消息和缺少目标的草稿引导。小窗口展开属性时，属性面板实测 147px，目标标题可滚动查看；长错误状态栏仍为 26px。取点布局、坐标真实粘贴及点位排序回归通过，另修复窗口库切换导致行高变化后当前点位滚出视野的问题，见[取点工具说明](picker-design.md)。
@@ -69,10 +102,9 @@ pwsh -NoProfile -File scripts\smoke-manager-controls.ps1 -Executable target\rele
 
 原生客户端需重新打开后使用更新的 Release 产物。UI 检查使用隔离目录并关闭自动执行服务，没有请求游戏回放。多 DPI、多显示器、系统 IME 和真实游戏回放未在本次改版中验收。
 
-
 ## 路线库与点位序列的紧凑列表
 
-路线条目固定 **48 DIP**，条目间距 **2 DIP**。第一行是名称与点位数，第二行是文件名与绑定热键；错误路线在第一行右侧显示“格式有误”，不额外增加一行。长名称、文件名及热键单行省略，整项悬停提示与可访问名称提供完整信息，错误详情仍可通过打开修复查看。路线库搜索框和新建 / 导入 / 刷新按钮均为 28 DIP，顶部与底部减少留白。
+路线条目固定 **48 DIP**，条目间距 **2 DIP**。第一行是名称与点位数，第二行是文件名与绑定热键，右侧独立 Switch 控制快捷键启用；错误路线在第一行右侧显示“格式有误”，不额外增加一行。长名称、文件名及热键单行省略，整项悬停提示与可访问名称提供完整信息，错误详情仍可通过打开修复查看。路线库搜索框和新建 / 导入 / 刷新按钮均为 28 DIP，顶部与底部减少留白。
 
 点位条目固定 **36 DIP**，间距 **2 DIP**，以“序号 / 名称 / 动作数”单行排列。序号改为右对齐数字列，至少容纳三位数；移除圆形序号和纵向连接线。名称保持 14 DIP，动作数保持 12 DIP，长名称省略后可悬停查看全文。标题、总数及新增点位合并为一行，上移 / 下移 / 删除继续固定在底部，操作按钮为 28 DIP。
 
@@ -81,8 +113,11 @@ pwsh -NoProfile -File scripts\smoke-manager-controls.ps1 -Executable target\rele
 本次 Release 在 96 DPI 下使用 27 条路线、120 个点位的隔离数据测量，属性及服务详情收起，路线库展开：
 
 | 客户区 | 路线完整可见数 / 视口高 | 点位完整可见数 / 视口高 | 条目高度 / 间隔 |
+
 |---|---:|---:|---|
+
 | 1280×900 | 13 条 / 656 DIP | 17 个 / 662 DIP | 路线 48、点位 36、间隔 2 DIP |
+
 | 900×640 | 7 条 / 396 DIP | 10 个 / 402 DIP | 路线 48、点位 36、间隔 2 DIP |
 
 两种尺寸各另有 1 条路线、1 个点位部分可见，未计入完整可见数。长名称、长热键和错误路线不增加行高；第 100 点可访问名称包含完整名称及动作数。切换第 100 / 首 / 末点、首尾排序禁用、排序往返、点位增删、表单 / YAML 往返、选中项悬停及输入框聚焦时的背景色检查均通过。额外隔离检查通过真实拖动，将路线 / 点位面板缩至 215 / 210 DIP（扣除右侧 1 DIP 边框后列表视口为 214 / 209 DIP），条目高度保持 48 / 36 DIP，工具按钮未超出窗口；按文件名 / 显示名搜索、无结果及清空恢复通过。
@@ -93,11 +128,16 @@ pwsh -NoProfile -File scripts\smoke-manager-controls.ps1 -Executable target\rele
 
 ## 界面结构
 
-- **路线库**：名称和文件名搜索，48 DIP 双行路线摘要、点数与绑定热键，明确的当前选择。新建区按需展开；新建仍是内存草稿，显式保存后才写入文件。坏文件可打开修复。
+- **路线库**：名称和文件名搜索，48 DIP 双行路线摘要、点数与绑定热键，明确的当前选择；每行独立 Switch 控制快捷键启用，切换不会打开路线或改变当前编辑对象。新建区按需展开；新建仍是内存草稿，显式保存后才写入文件。坏文件可打开修复。
+
 - **路线工作区**：原生窗口标题为“路线管理”，顶部不再显示品牌或“路线工作台”标题，仅保留路线库、服务状态与工具控件。工作区提供路线标题与保存状态、保存按钮、点位编辑 / YAML 切换。路线属性与文件操作分别展开，导出、定位文件和删除保持原有动作。
+
 - **点位序列**：36 DIP 单行显示独立拖动手柄、真实执行序号、名称及动作数；列表和动作编辑区独立滚动。拖动手柄可调整执行顺序，插入线标记目标位置，靠近上下边缘自动滚动；Escape 或列表外松开取消。点击手柄选中点位后可用 Alt+↑/↓ 排序，底部上移 / 下移按钮继续可用，首尾按钮禁用。排序保持当前选中点位、未保存的名称与动作参数，以及动作展开状态；保存后新顺序生效。零点位与零动作有引导。编辑区的点位名称、备注默认收起，点击工具栏“点位信息”才显示在滚动内容首部，展开后也可滚出视野，不占固定区域。新生成 YAML / 缓存不保存点位层 `pos`，旧字段兼容读取并忽略，点击与拖动动作自身的坐标仍可编辑。
+
 - **动作编辑**：固定工具栏显示当前点位名、动作数量、点位信息、全部展开/收起和“添加动作”菜单。动作列表独立滚动，顶部菜单追加末尾，每条动作的“在下方添加”菜单插入当前动作之后，新增后定位到名称输入。每条动作提供独立拖拽手柄、执行序号、名称、类型、单项展开/收起和删除控件；收起时保留名称和类型。拖动手柄调整顺序，点击手柄可输入目标序号，手柄聚焦后 Alt+↑/↓ 也可调整。展开状态保存在独立的 manager-ui 状态文件，随排序、插入、删除、切换点位、路线及重启恢复，不触发路线校验或脏状态。参数标注单位与输入格式，点击的鼠标按键使用“左键 / 右键 / 中键”下拉框，按下 / 松开的按键动作使用“按下 / 松开”下拉框。名称与参数均提供包括动作序号的中文可访问名称和稳定 ID。
-- **固定执行栏与状态栏**：执行栏单行提供起始点、选中点试跑、热键绑定及真实急停键；单步进度和独立试跑进程状态显示在最底部状态栏。管理器不提供整条路线连续执行入口。切换路线时起始点读取该路线绑定值，无绑定时显示 1。执行服务和独立单点试跑进程分别提示状态；受理请求不表示试跑完成。
+
+- **固定执行栏与状态栏**：执行栏提供起始点及“保存起始点”、选中点试跑、当前快捷键、设置/清除快捷键及真实急停键；单步进度显示在最底部状态栏。管理器不提供整条路线连续执行入口。切换路线时起始点读取该路线绑定值，无绑定时显示 1。所有回放统一通过执行服务，服务未启动时试跑禁用；路线快捷键关闭仍允许服务就绪时的按钮试跑。受理请求不表示试跑完成。
+
 - **确认区域**：保存 / 放弃 / 取消等原有分支使用覆盖式确认区域；焦点进入取消按钮，Escape 可取消。确认层在编辑器与调整面板之上处理点击。
 
 布局设计基准为 1280×900；小于 1100px 时路线库默认折叠，可通过顶栏重新展开。用户手动选择的展开状态在本次会话中保留。最小客户区为 900×640，原生标题栏与边框另计；本机紧凑截图为 916×679。
@@ -113,7 +153,9 @@ pwsh -NoProfile -File scripts\smoke-manager-controls.ps1 -Executable target\rele
 [动作交互回归脚本](../scripts/smoke-manager-actions.ps1) 使用唯一隔离目录、36 个混合动作及关闭自动执行服务的配置，覆盖固定工具栏、信息折叠、名称保存、动作排序、YAML 往返、重开恢复和最后一个动作删除后的键盘焦点；`-CaptureScreenshots` 可输出当前原生窗口截图：
 
 ```powershell
+
 pwsh -NoProfile -File scripts\smoke-manager-actions.ps1 -Executable target\release\game-helper.exe -CaptureScreenshots
+
 ```
 
 ## 点位拖动排序
@@ -127,7 +169,9 @@ pwsh -NoProfile -File scripts\smoke-manager-actions.ps1 -Executable target\relea
 [点位排序验收脚本](../scripts/smoke-manager-point-ordering.ps1) 使用唯一隔离目录、40 个点位（含重复 ID 与空动作点位），通过原生鼠标拖放验证排序、自动滚动和取消，并核对保存后的 YAML、执行缓存和重启后的动作展开状态：
 
 ```powershell
+
 pwsh -NoProfile -File scripts\smoke-manager-point-ordering.ps1 -CaptureScreenshots
+
 ```
 
 本次 107 项 Rust 测试通过，另有 1 个私有子进程测试入口 ignored；格式检查、Clippy 与 Release 构建通过，保留既有警告。现有动作编辑与紧凑布局回归通过。新增点位验收在 96 DPI 下验证 1280×900、900×640 和最窄 210 DIP 点位面板（实际列表视口 209 DIP），行高保持 36 DIP、手柄 28 DIP。真实拖动首尾自动滚动、原位释放、Escape、列表外释放、窗口失焦后再次普通点击、未选中点位跨越选中项且保留未提交编辑、键盘排序、保存 / 路线切换 / 重启后顺序和重复 ID 动作展开状态均通过。
@@ -143,29 +187,43 @@ pwsh -NoProfile -File scripts\smoke-manager-point-ordering.ps1 -CaptureScreensho
 两组隔离检查分别验证编辑器保存/重开和真实 AHK 回放。运行时会操作各自创建的测试窗口，应顺序执行：
 
 ```powershell
+
 pwsh -NoProfile -File scripts\smoke-manager-actions.ps1 -Executable target\release\game-helper.exe
+
 pwsh -NoProfile -File scripts\smoke-native-drag.ps1
+
 ```
 
 AHK 检查使用独立空白目标窗口、临时路线和独立命名的 daemon 窗口，验证默认速度、瞬移与慢速、相同起终点、发送模式恢复和急停后跳过下一动作。它不读取用户路线；证据保存在输出所示的 `.tools/native-drag-*` 目录。
 
-本次工作区 85 项测试通过，另有 1 个由父测试调用的私有子进程入口保持 ignored；编译检查、格式检查、Clippy 与 Release 构建通过，保留既有警告。AHK 2.0.30 的隔离回放通过：runner 的默认速度、速度 0、速度 40、相同起终点，以及 daemon 的 IPC 原生拖动均正确到达终点并释放左键。测试同时确认 Input/Play 发送模式恢复、提前停止模式恢复，以及左键按住期间触发急停后跳过下一动作。异常路径未人为触发，仅检查了嵌套 `finally` 清理代码；真实游戏、多 DPI 和多显示器未在本次回放中覆盖。
+本次工作区 85 项测试通过，另有 1 个由父测试调用的私有子进程入口保持 ignored；编译检查、格式检查、Clippy 与 Release 构建通过，保留既有警告。历史 AHK 2.0.30 隔离回放已验证默认速度、速度 0、速度 40、相同起终点及 IPC 原生拖动到达终点并释放左键。当前脚本已将这些回放用例统一迁移到隔离 daemon 服务，不再提供独立执行入口；这条历史记录不代表本轮服务迁移已经复验。测试同时确认 Input/Play 发送模式恢复、提前停止模式恢复，以及左键按住期间触发急停后跳过下一动作。异常路径未人为触发，仅检查了嵌套 `finally` 清理代码；真实游戏、多 DPI 和多显示器未在本次回放中覆盖。
 
 Release 管理器的动作交互检查也已通过：1280×900、900×640 及紧凑窗口展开路线库时，七类添加按钮均可见。新建原生拖动的速度默认 2，界面修改为 37 后，经保存、缓存生成、YAML 切换、切换点位、重新打开路线及重启管理器仍保持正确。
 
 ## 视觉与实现
 
 | 用途 | 色值 |
+
 |---|---|
+
 | 工作台底色 | `#FFF7FC` |
+
 | 编辑工作面 | `#FFFFFF` |
+
 | 主文字 | `#382D38` |
+
 | 主按钮背景 / 文字 | `#FBA1DB` / `#3F2438` |
+
 | 通用轻量选中背景 | `#FDE5F4` |
+
 | 路线与点位选中背景 | `#F8C4E4` |
+
 | 选中边线与焦点 | `#9C3E78` |
+
 | 控件边界 | `#A17D98` |
+
 | 未保存提示 | `#8A5A16` |
+
 | 错误与删除 | `#A13255` |
 
 中文正文使用 Microsoft YaHei UI；点位序号使用 Bahnschrift；源码使用 Cascadia Mono。点位的执行顺序是主要视觉元素。没有新增自动播放的装饰动画。
@@ -181,14 +239,23 @@ Release 管理器的动作交互检查也已通过：1280×900、900×640 及紧
 以下结果来自当前 Debug/Release 构建和 96 DPI 的原生 Release 窗口，所有交互均使用隔离数据，不请求游戏回放。
 
 | 检查 | 结果 |
+
 |---|---|
+
 | 工作区测试 | 79 passed、0 failed；另有 1 个由父测试启动的私有子进程入口保持 ignored |
+
 | Clippy、格式、diff 空白检查 | 通过；Clippy 保留既有文档与风格警告 |
+
 | Debug / Release 构建 | 通过，统一启动入口优先使用本次 Release |
+
 | 长列表添加及布局 | 36 个预置混合动作，滚至末尾仍可添加六类动作；新增后标题和名称框可见；默认、900×640 及紧凑展开路线库的工具栏控件均位于可见边界内 |
+
 | 折叠与点位信息 | 展开/收起不写文件、不产生脏状态；信息展开后随内容滚走，收起不渲染表单；首次打开、调整窗口、切换路线及重启时首动作可见 |
+
 | 名称与参数保留 | 中文、引号等名称及原参数经过折叠、上下移、删除、保存、YAML 往返、切换点位/路线及进程重启后保留；最终 41 个动作逐字段比对缓存通过 |
+
 | 空列表及键盘焦点 | 删除唯一动作后，真实 Enter 可打开点位信息，确认焦点已恢复到可见按钮 |
+
 | 既有控件回归 | 中文下拉所有选项、JSON 类型、动作坐标精度、起始点恢复/默认/保存/范围提示、切换路线的保存/放弃/取消及读取失败保留内容均通过 |
 
 对应脚本为[动作交互检查](../scripts/smoke-manager-actions.ps1)与[原有控件回归](../scripts/smoke-manager-controls.ps1)。真实游戏回放、系统 IME 组合输入及多 DPI/多显示器尚未在本次验收中覆盖。
@@ -198,27 +265,45 @@ Release 管理器的动作交互检查也已通过：1280×900、900×640 及紧
 本轮在 Windows、96 DPI（100%）下运行，UI 检查均使用关闭自动启动的隔离数据目录。未请求生产路线回放。
 
 | 检查 | 结果 |
+
 |---|---|
+
 | `cargo check --workspace --locked` | 通过 |
+
 | `cargo test --workspace --locked` | 62 passed、0 failed；另有 1 个 ignored 子进程服务入口，由父测试显式启动 |
+
 | `cargo clippy --workspace --all-targets --locked` | 通过；保留已有的文档与风格警告 |
+
 | `cargo fmt --all -- --check` | 通过 |
+
 | Debug / Release 构建 | 通过；原生入口优先使用已更新的 Release |
+
 | 搜索与新建区 | 文件名 / 名称匹配、无结果、清空恢复、展开与收起通过 |
+
 | 点位与窗口布局 | 首尾排序禁用、空动作、900×640 关键控件边界与路线库折叠 / 重开通过 |
+
 | 中文编辑与保存 | 表单 / YAML 双向中文保留、坏源码切换失败后保留输入、显式保存与缓存检查通过 |
+
 | 脏关闭 | 拦截、取消保留源码、再次关闭与显式放弃退出通过 |
+
 | 额外边界 | 空路线库、零点位、坏文件错误反馈、120 个长名称点位及只查看不产生脏状态通过 |
+
 | 键盘与可访问性 | 动作参数稳定 ID 与中文名称、源码编辑器名称、真实 Escape 取消离线执行确认通过 |
 
 可重复运行的 UI 检查脚本：
 
 ```powershell
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\prepare-smoke.ps1
+
 # 启动 target\debug\game-helper.exe --app-root "<项目>\.tools\acceptance sandbox"
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-manager-readonly.ps1 -TargetProcessId <pid>
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-manager-layout.ps1 -TargetProcessId <pid>
+
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-manager.ps1 -TargetProcessId <pid>
+
 ```
 
 最后一个脚本会修改隔离 Smoke 路线并关闭窗口。布局脚本会移动和调整指定窗口，并在 `.tools` 下保存截图。不要对生产数据窗口运行这些验收脚本。
@@ -230,8 +315,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\smoke-manager.ps
 新增 [smoke-manager-controls.ps1](../scripts/smoke-manager-controls.ps1) 自建关闭自动服务的隔离根目录，覆盖中文下拉框缺省值、全部选项、键盘提交与 Escape 取消、动作排序、点位切换、YAML 往返及 JSON 类型；检查点位层坐标不再保存、动作坐标保留、起始点回显/默认值/保存/越界提示，以及切换路线时保存、放弃、取消和读取失败的内容保留。脚本不会请求试跑或热键回放：
 
 ```powershell
+
 pwsh -File scripts\smoke-manager-controls.ps1
+
 pwsh -File scripts\smoke-manager-controls.ps1 -Executable target\release\game-helper.exe
+
 ```
 
 取点回归脚本 [smoke-picker.ps1](../scripts/smoke-picker.ps1) 自建隔离目录和原生 `--probe` 目标，覆盖失焦全局采点、坐标复制、自动保存、标题隔离、重启恢复与错误处理；无需先运行 `prepare-smoke.ps1`。[smoke-picker-coordinates.ps1](../scripts/smoke-picker-coordinates.ps1) 验证点击取点坐标复制后，用真实 Ctrl+V 粘贴至管理器的点击坐标框，保存路线/缓存并重启管理器后坐标保留。均不请求回放，可传 `-Executable target\release\game-helper.exe` 复验。
@@ -247,3 +335,9 @@ pwsh -File scripts\smoke-manager-controls.ps1 -Executable target\release\game-he
 [紧凑窗口](assets/native-manager-compact.png) · [YAML 编辑](assets/native-manager-yaml.png) · [空路线库](assets/native-manager-empty.png)
 
 本轮使用 Windows 可访问性树与控件坐标检查可见区域和交互。当前模型的图片读取通道不支持图像输入，未宣称已完成截图的逐像素目视验收。150% / 200% DPI、系统 IME 组合输入和真实 AHK 完整回放仍需继续按[迁移记录](rust-migration.md)验收。
+
+## 本轮服务回放复验
+
+内置 AHK 2.0.31 的隔离服务回放已 exit 0：9 个 IPC 拖动用例均正确释放左键，执行器 harness 覆盖 Input/Play 恢复、四阶段急停后跳过后续动作及异常清理。证据见[本轮服务回放摘要](../.tools/native-drag-2a439400392a45538ad86046fe79b5fb/summary.json)；`existingDaemonUnchanged=true`，不涉及真实游戏。真实服务捕获租约检查另已通过。现有动作、控件及布局脚本已适配监听按钮与“保存起始点”，静态解析通过，其本轮 GUI 结果需单独运行后记录。
+
+最终工作区验证为 **126 passed / 0 failed / 2 ignored**，其中捕获租约检查已单独运行并通过；另一个私有 helper 由父测试调用。最终 Release 构建、格式检查及 Clippy 均通过，保留既有警告。上述结果不代表所有历史 GUI 脚本均已在本轮重跑。

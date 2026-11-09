@@ -1,5 +1,8 @@
-//! Legacy AHK protocol client. Blocking methods belong on background workers.
-use crate::daemon_protocol::{DAEMON_WINDOW_TITLE, MSG_NAME_PING, MSG_NAME_RELOAD, MSG_NAME_STOP};
+//! AHK service protocol client. Blocking methods belong on background workers.
+use crate::daemon_protocol::{
+    DAEMON_WINDOW_TITLE, MSG_NAME_CAPTURE_BEGIN, MSG_NAME_CAPTURE_END, MSG_NAME_CAPTURE_RENEW,
+    MSG_NAME_PING, MSG_NAME_RELOAD, MSG_NAME_STOP,
+};
 use anyhow::{Context, Result, ensure};
 use game_helper_core::{
     config::Config,
@@ -7,8 +10,8 @@ use game_helper_core::{
 };
 use std::{
     os::windows::process::CommandExt,
-    path::{Path, PathBuf},
-    process::{Child, Command},
+    path::PathBuf,
+    process::Command,
     time::{Duration, Instant},
 };
 use windows::{
@@ -90,6 +93,15 @@ impl DaemonClient {
         Ok(id)
     }
     fn send(&self, hwnd: HWND, message: u32, parameter: LPARAM) -> Result<usize> {
+        self.send_parameter(hwnd, message, WPARAM(0), parameter)
+    }
+    fn send_parameter(
+        &self,
+        hwnd: HWND,
+        message: u32,
+        owner: WPARAM,
+        parameter: LPARAM,
+    ) -> Result<usize> {
         let mut value = 0;
         // SAFETY: The caller retains any pointed-to COPYDATA buffer until this
         // synchronous send completes. WM_COPYDATA is marshalled by Windows for
@@ -98,7 +110,7 @@ impl DaemonClient {
             SendMessageTimeoutW(
                 hwnd,
                 message,
-                WPARAM(0),
+                owner,
                 parameter,
                 SMTO_ABORTIFHUNG | SMTO_BLOCK,
                 self.timeout_ms,
@@ -107,7 +119,7 @@ impl DaemonClient {
         };
         ensure!(
             sent.0 != 0,
-            "daemon 通信超时、权限不足或窗口退出；执行请求的结果可能未知，未自动重发"
+            "daemon 通信超时、权限不足或窗口退出；请求的结果可能未知，未自动重发"
         );
         Ok(value)
     }
@@ -132,8 +144,9 @@ impl DaemonClient {
             self.title == DAEMON_WINDOW_TITLE,
             "自定义标题仅用于隔离联调，不能启动生产 daemon"
         );
-        let executable = find_ahk(config)?;
+        let executable = find_ahk(&self.paths, config)?;
         let mut child = Command::new(executable)
+            .arg("/ErrorStdOut")
             .arg(self.paths.root.join("ahk/daemon.ahk"))
             .current_dir(self.paths.root.join("ahk"))
             .creation_flags(0x0000_0200 | 0x0000_0008)
@@ -167,7 +180,7 @@ impl DaemonClient {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        anyhow::bail!("停止 daemon 超时，尚未确认退出；独立 runner 不受此操作影响")
+        anyhow::bail!("停止 daemon 超时，尚未确认退出")
     }
     pub fn reload(&self) -> Result<()> {
         let hwnd = self.hwnd().context("daemon 未运行")?;
@@ -193,45 +206,57 @@ impl DaemonClient {
             WM_COPYDATA,
             LPARAM((&packet as *const COPYDATASTRUCT) as isize),
         )?;
-        ensure!(accepted == 1, "daemon 拒绝执行请求，请检查路线缓存");
+        ensure!(
+            accepted == 1,
+            "daemon 拒绝执行请求：可能正在录制热键、执行中或路线缓存无效"
+        );
         Ok(())
     }
-    pub fn spawn_runner(
-        &self,
-        config: &Config,
-        cache: &Path,
-        start_at: usize,
-        only: usize,
-    ) -> Result<Child> {
+    fn capture_message(&self, name: &str, owner_hwnd: isize) -> Result<()> {
+        ensure!(owner_hwnd != 0, "热键录制需要有效的管理器窗口句柄");
+        let hwnd = self
+            .hwnd()
+            .context("daemon 未运行，无法暂停路线热键进行录制")?;
         ensure!(
-            start_at > 0 && cache.is_file(),
-            "起始点无效或执行缓存不存在"
+            self.send_parameter(
+                hwnd,
+                Self::message_id(name)?,
+                WPARAM(owner_hwnd as usize),
+                LPARAM(0),
+            )? == 1,
+            "daemon 拒绝热键录制会话请求：窗口失焦、租约失效或服务忙碌"
         );
-        let mut command = Command::new(find_ahk(config)?);
-        command
-            .arg(self.paths.root.join("ahk/runner.ahk"))
-            .arg(cache);
-        if start_at > 1 {
-            command.args(["--start", &start_at.to_string()]);
-        }
-        if only > 0 {
-            command.args(["--only", &only.to_string()]);
-        }
-        command.args(["--stop", &config.hotkeys.stop_all]);
-        command
-            .current_dir(self.paths.root.join("ahk"))
-            .creation_flags(0x0000_0200)
-            .spawn()
-            .context("启动 runner 失败")
+        Ok(())
+    }
+    /// Lease route-hotkey suppression for a live foreground manager HWND.
+    /// Only accepted while idle. Renew every second; the daemon restores the
+    /// previous pause state after three seconds, owner destruction, or focus loss.
+    /// Emergency stop stays active and configuration/cursors are untouched.
+    pub fn capture_begin(&self, owner_hwnd: isize) -> Result<()> {
+        self.capture_message(MSG_NAME_CAPTURE_BEGIN, owner_hwnd)
+    }
+    /// Renew the same owner's capture lease; an expired lease must begin again.
+    pub fn capture_renew(&self, owner_hwnd: isize) -> Result<()> {
+        self.capture_message(MSG_NAME_CAPTURE_RENEW, owner_hwnd)
+    }
+    /// End this owner's capture lease. No active lease is an idempotent success.
+    pub fn capture_end(&self, owner_hwnd: isize) -> Result<()> {
+        self.capture_message(MSG_NAME_CAPTURE_END, owner_hwnd)
     }
 }
 
-pub fn find_ahk(config: &Config) -> Result<PathBuf> {
+/// Locate AHK relative to the resolved application root before legacy overrides.
+/// An existing bundled runtime always wins, including over stale machine paths.
+pub fn find_ahk(paths: &AppPaths, config: &Config) -> Result<PathBuf> {
+    let bundled = paths.root.join("ahk/runtime/AutoHotkey64.exe");
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
     if let Some(path) = config.ahk_path.as_ref().filter(|s| !s.trim().is_empty()) {
         let path = PathBuf::from(path);
         ensure!(
             path.is_absolute() && path.is_file(),
-            "config.json 中 ahkPath 不存在或不是绝对路径：{}",
+            "内置 AutoHotkey 缺失，config.json 中 ahkPath 不存在或不是绝对路径：{}",
             path.display()
         );
         return Ok(path);
@@ -257,5 +282,7 @@ pub fn find_ahk(config: &Config) -> Result<PathBuf> {
             }
         }
     }
-    anyhow::bail!("未找到 AutoHotkey v2，请设置 config.json 的 ahkPath")
+    anyhow::bail!(
+        "内置 AutoHotkey v2 缺失，请恢复完整发布包；开发环境也可设置 config.json 的 ahkPath"
+    )
 }

@@ -12,7 +12,7 @@
 //!
 //! Phase 3 新增（AHK 生命周期与 Win32 IPC）：
 //! - [`daemon`]：[`daemon::DaemonClient`] —— daemon 窗口消息 IPC 客户端与 AHK
-//!   生命周期管理（status/start/stop/reload/run_route/spawn_runner、find_ahk）。
+//!   生命周期管理（status/start/stop/reload/run_route、录制租约、find_ahk）。
 //!   协议契约见模块文档与 `daemon_protocol`。
 //! - [`instance`]：[`instance::InstanceGuard`] —— 按 app root + 模式区分的
 //!   命名互斥量单实例守卫（RAII CloseHandle；已存在即报错，不结束他人进程）。
@@ -57,6 +57,18 @@ pub mod daemon_protocol {
     pub const MSG_NAME_RELOAD: &str = "GameHelperDaemon_Reload";
     /// `RegisterWindowMessageW` 字符串：优雅退出。
     pub const MSG_NAME_STOP: &str = "GameHelperDaemon_Stop";
+    /// `RegisterWindowMessageW`: begin capture, `wParam=owner HWND`, `lParam=0`.
+    /// Returns 1 only for an idle service and a live foreground owner; route
+    /// hotkeys are suppressed while emergency stop remains available.
+    pub const MSG_NAME_CAPTURE_BEGIN: &str = "GameHelperDaemon_CaptureBegin";
+    /// Renew the same foreground owner's capture lease; 1=renewed, 0=rejected.
+    pub const MSG_NAME_CAPTURE_RENEW: &str = "GameHelperDaemon_CaptureRenew";
+    /// End this owner's capture; 1=ended/already absent, 0=another owner holds it.
+    pub const MSG_NAME_CAPTURE_END: &str = "GameHelperDaemon_CaptureEnd";
+    /// Service-side lease expiry; loss of owner/focus restores sooner.
+    pub const CAPTURE_LEASE_MS: u64 = 3_000;
+    /// Manager heartbeat interval; failure must end local key recording.
+    pub const CAPTURE_HEARTBEAT_MS: u64 = 1_000;
     /// `WM_COPYDATA`，`u32` 值 `0x004A`。
     pub const WM_COPYDATA: u32 = 0x004A;
     /// `WM_COPYDATA` 的 `dwData` magic，`1` 表示运行请求。
