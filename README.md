@@ -1,89 +1,234 @@
-# game_helper
+# game-helper
 
-基于 **Rust + GPUI Kit** 的原生 Windows 路线管理器和取点工具，使用 **AutoHotkey v2** 回放路线。项目仅维护 Rust 客户端。
+面向 Windows 的原生路线管理器与独立取点工具。使用 **Rust + GPUI Kit** 编辑路线，通过 **AutoHotkey v2** 执行鼠标、键盘操作，适合需要按点位组织和回放操作的场景。
 
-## 启动
+当前为原生预览版本，仅维护 Rust 桌面客户端。界面采用原生组件，无需 WebView；仓库内附带 x64 AutoHotkey 运行时。
+
+## 功能概览
+
+| 功能 | 说明 |
+| --- | --- |
+| 路线管理 | 新建、搜索、导入、导出、删除路线，支持表单与 YAML 源码两种编辑方式。 |
+| 点位与动作编辑 | 点位可复制、排序；动作支持命名、插入、拖动排序及展开/收起，展开状态独立保存。 |
+| 七类动作 | 点击、单次按键/松开、按住、滚轮、拖动、等待、原生拖动。 |
+| 独立取点 | 搜索窗口或延时选窗，查看屏幕、客户区、归一化坐标，通过 `Ctrl+Alt+P` 或延时按钮采点。 |
+| 单步回放 | 每按一次路线快捷键执行一个点位，也可在管理器中试跑选中点、保存单步起始位置。 |
+| 文件保护 | 提示未保存修改，保存时检测磁盘冲突，对被改写的原文件留存备份。 |
+| 执行服务 | 在管理器中启动、停止、重载 AHK 服务，查看执行状态，使用全局急停键中断回放。 |
+
+## 环境要求
+
+- **运行平台**：Windows 10 及以上，x64。
+- **源码构建**：Rust 工具链、Visual Studio 2022 的“使用 C++ 的桌面开发”工作负载及 Windows SDK，使用 `x86_64-pc-windows-msvc` 工具链。
+- **版本约定**：[rust-toolchain.toml](rust-toolchain.toml) 固定 Rust **1.99.1**，[Cargo.toml](Cargo.toml) 固定 GPUI Kit **0.9.0**，依赖版本由 [Cargo.lock](Cargo.lock) 锁定。
+- **运行依赖**：如系统缺少 `VCRUNTIME140.dll`，需安装 Microsoft Visual C++ x64 运行库。运行已编译的客户端无需安装 Rust 或系统版 AutoHotkey。
+
+## 从源码构建与启动
+
+在已安装 Git、Rustup 和上述 C++ 构建工具的 Windows 终端中执行：
 
 ```bat
-rem 打开管理器
+git clone https://github.com/GameLef/game-helper.git
+cd game-helper
+copy config.example.json config.json
+cargo build -p game-helper-desktop --release --locked
+```
+
+首次运行 Cargo 时，Rustup 会按工具链配置准备指定版本；首次构建还需要下载依赖。构建产物为 `target/release/game-helper.exe`。
+
+```bat
+rem 打开路线管理器
 start.bat
 
 rem 打开独立取点工具
 start.bat --picker
 ```
 
-`start.bat` 是统一启动入口，优先使用 `target/release/game-helper.exe`，其次使用 `target/debug/game-helper.exe`；缺少产物时会提示构建命令。
+[start.bat](start.bat) 优先启动 release 产物，其次使用 `target/debug/game-helper.exe`，并将仓库根目录传给客户端。它只负责启动，不会自动编译。若未找到 exe，请执行上面的标准 `cargo build` 命令；脚本中现有的 `scripts\cargo.cmd` 提示指向未纳入仓库的本地工具。
 
-运行客户端无需安装 Rust、WebView 或 AutoHotkey。项目与便携包内置普通 x64 AutoHotkey v2.0.31；服务优先使用应用目录下的 `ahk/runtime/AutoHotkey64.exe`，缺少内置解释器时才回退到 `config.json` 的 `ahkPath` 和系统安装探测。Windows 还需要 Microsoft Visual C++ x64 运行库（`VCRUNTIME140.dll`）。
-
-## 从源码构建
-
-需要 Windows 10+、Visual Studio 2022 C++ 桌面工具与 Windows SDK。项目固定 Rust 1.99.1 MSVC 和 GPUI Kit 0.9.0，使用项目内工具链与编译缓存。
+开发时也可以直接运行：
 
 ```bat
-scripts\cargo.cmd build -p game-helper-desktop --release --locked
-scripts\cargo.cmd test --workspace --locked
-scripts\cargo.cmd fmt --all -- --check
+cargo run -p game-helper-desktop --locked -- --app-root .
+cargo run -p game-helper-desktop --locked -- --app-root . --picker
 ```
 
-便携打包：
+客户端还提供 `--probe` 原生能力验证窗口，用于检查输入框、YAML 编辑器、文件对话框和全局采点热键。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\bundle.ps1
-```
+### 应用目录与携带运行
 
-发布目录和 zip 输出到 `dist/`，包含 AHK 解释器、完整许可证、对应源码归档与校验信息；请携带整个目录，不能只复制管理器 exe。新包默认随管理器启动执行服务，默认不包含用户路线与热键绑定；需要携带时传入 `-IncludeUserData`，保留用户自启设置并移除构建机的 `ahkPath`。完整构建、进程约定和验证记录见[原生客户端说明](docs/rust-migration.md)。
+管理器和取点工具要求应用根目录同时包含本地 `config.json` 与 [ahk/daemon.ahk](ahk/daemon.ahk)。首次使用时从 [config.example.json](config.example.json) 复制生成本地配置。可用 `--app-root` 显式指定；未指定时，程序从 exe 所在目录开始向上查找。
 
-## 功能与使用
-
-- **路线管理**：新建、搜索、导入导出、删除，以及点位与操作编辑；支持表单和 YAML 源码双视图、未保存修改保护、磁盘冲突检测和原文备份。
-- **独立取点**：窗口库搜索或延时准星选窗，分栏查看屏幕、客户区及归一化坐标，通过全局 `Ctrl+Alt+P` 或可取消的延时按钮采点。点位按进程名、窗口类和完整标题分别自动保存；支持上移、下移调整顺序，重启后恢复；点击坐标或复制按钮即可粘贴到路线管理的坐标框。见[取点工具说明](docs/picker-design.md)。
-- **七类动作编排**：点击、按下/松开、按住、滚轮、拖动、等待和原生拖动；每个动作可填写名称并展开/收起。拖动动作左侧手柄即可排序，点击手柄可输入目标序号，也支持手柄聚焦后 Alt+↑/↓。顶部“添加动作”追加到末尾，列表开头可直接插入，每条动作的“在下方添加”可在原位置之后选择类型插入。新增动作自动展开并定位。点位支持复制到原点位下方，再独立修改动作。
-- **编辑状态记忆**：每条动作的展开/收起状态自动保存到独立的 `state/manager-ui.json`，切换点位、路线或重启后恢复；不会写入路线、导出内容或执行缓存，也不要求先保存路线。点位名称与备注仍通过“点位信息”按需展开。路线格式见[route/v1 规范](docs/route-format.md)。
-- **路线快捷键**：保存路线后点击“设置快捷键”，在监听弹窗直接按下按键或组合键，捕获后自动保存：新绑定默认关闭，修改已有绑定保留原开关状态，已开启时自动关闭其他同键路线；清除按钮解除绑定。路线列表每项右侧的 Switch 控制该快捷键是否有效，状态随配置保存并在重启后恢复。同一快捷键可保存给多条路线，开启其中一条时其他同键路线自动关闭；关闭后不会自动恢复旧路线。旧配置中缺少 `enabled` 的已有绑定默认开启。
-- **路线执行**：热键单步执行与“试跑选中点”均通过执行服务完成；服务未启动时试跑按钮禁用，先在服务控制中启动。快捷键关闭不影响服务就绪时的按钮试跑。“保存起始点”独立保存单步起始位置；管理器提供服务启停、重载和单步进度。点击动作的鼠标按键使用“左键 / 右键 / 中键”下拉选择，按下/松开动作使用“按下 / 松开”下拉选择。
-- **急停**：默认全局 `F12`，实际按键由 `config.json` 的 `hotkeys.stopAll` 决定。
-
-热键绑定使用 daemon 单步模式：每按一次执行一个点位，最后一个点成功后回到设定的起始点循环；执行失败或急停时游标不前进。保存、试跑选中点或开启路线 Switch 都会生成路线 JSON 缓存；已有 YAML 路线设置快捷键后，开启 Switch 时会校验已保存路线并生成缓存。点位列表和编辑区均不显示点位坐标；新建或结构化保存的 YAML 与执行缓存不再包含点位层 `pos`，坐标仅存于点击、拖动动作中。取点工具独立保存采集坐标，复制后由管理器写入所需动作。旧路线的点位层 `pos` 兼容读取并忽略，动作坐标保持有效；源码模式仍保留用户原文。
-
-管理器采用路线库、点位序列和动作编辑分栏的浅粉紧凑工作台，支持路线搜索和单行执行栏；管理器与取点工具共享以 `#FBA1DB` 为核心的主题。见[界面设计与实际截图](docs/manager-design.md)。
+若要自行整理可携带的运行目录，可采用以下结构：
 
 ```text
-Rust 管理器
-    │ 校验并保存 YAML，生成执行缓存
-    ▼
-routes/_cache/*.json ──预载──▶ AHK daemon
-                                 ▲
-                                 │ Win32 IPC：Ping / Reload / Stop / Run
-                                 │
-                            Rust 管理器
+game-helper/
+├─ game-helper.exe           从编译产物复制
+├─ config.json               按本机需求设置
+└─ ahk/                     保留仓库中的整个目录
+   ├─ daemon.ahk
+   ├─ lib/
+   └─ runtime/
 ```
 
-## 目录
+在该目录中运行 `game-helper.exe` 或 `game-helper.exe --picker`。应用目录需要可写，以便保存路线、配置、状态和日志。需要迁移个人数据时，再复制自己使用的路线及状态目录。
+
+## 首次使用
+
+远程仓库不包含个人路线。首次打开路线库为空属于正常情况；保存路线、取点或启动服务时，程序会按需创建对应数据目录。
+
+1. **准备配置**：首次克隆后执行 `copy config.example.json config.json`，再按需修改本地配置。模板中的 `hotkeys.bindings` 为空列表，不包含个人路线或快捷键。已有本地配置时请保留自己的设置，无需覆盖。
+2. **获取坐标**：打开取点工具，搜索目标窗口或使用延时准星选窗。启用全局采点热键后，将光标移入目标客户区并按 `Ctrl+Alt+P`，也可直接使用延时采点按钮。点击坐标或复制按钮即可复制归一化坐标；采集记录按进程名、窗口类和完整标题分别自动保存，可调整顺序。
+3. **编排路线**：在管理器中新建路线，填写目标窗口匹配条件，添加点位和动作。将坐标粘贴到点击位置或拖动起止位置，保存路线。
+4. **试跑单点**：在服务控制中启动执行服务，再点击“试跑选中点”。路线存在未保存修改时，需要先保存。配置模板关闭了服务自启，也可在管理器中开启随启动运行。
+5. **设置快捷键**：保存路线后点击“设置快捷键”，在弹窗中按下按键或组合键。新绑定默认关闭，需要打开路线列表右侧的开关才会生效；“保存起始点”单独设置单步循环的起点。
+6. **单步执行与急停**：每按一次路线快捷键执行一个点位，成功后推进到下一点；最后一点成功后，下次从设定起点继续。执行失败或急停时游标不前进。默认全局急停键为 `F12`。
+
+同一快捷键可保存给多条路线，开启其中一条时，其他使用同键的路线会自动关闭。关闭路线快捷键不影响服务就绪时的按钮试跑。急停会中断当前回放并保留服务；管理器中的“停止服务”会结束服务进程。**关闭管理器后，已启动的执行服务仍会继续驻留。**
+
+## 路线格式
+
+路线使用 `route/v1` YAML 格式，保存在本地 `routes/` 下，支持 `.yaml` 和 `.yml`。下面的示例匹配记事本进程，在客户区中心点击后等待 200 毫秒；使用前请将目标和动作改为自己的需求。
+
+```yaml
+format: route/v1
+name: 示例路线
+note: 在目标客户区中心点击并等待
+target:
+  process: notepad.exe
+  windowClass: ""
+  title: ""
+points:
+  - id: 1
+    name: 第一个点位
+    note: ""
+    operations:
+      - type: click
+        name: 点击中心
+        pos: [0.5, 0.5]
+        button: left
+        clicks: 1
+      - type: wait
+        name: 等待界面响应
+        ms: 200
+```
+
+`target` 中的 `process`、`windowClass`、`title` 至少填写一项。执行器优先按进程名查找，否则使用窗口类，最后使用标题子串，选择首个可见匹配窗口；多个字段不会组合筛选。点位 `id` 必须是正整数。位置使用客户区归一化坐标 `[x, y]`，范围为 `0～1`，`[0, 0]` 为左上角，`[1, 1]` 为右下角，换算使用客户区的 `width - 1`、`height - 1`。
+
+坐标存放在具体动作中。旧路线点位层的 `pos` 字段兼容读取但会被忽略，结构化保存和执行缓存不会保留该字段。
+
+| 动作类型 | 含义 | 主要参数 |
+| --- | --- | --- |
+| `click` | 在指定位置点击 | `pos`；`button` 为 `left/right/middle`，默认 `left`；`clicks` 为正整数，默认 `1`。 |
+| `key` | 发送一次按键或仅松开 | `key` 为 AHK 键名；`up: false` 发送一次完整按键，`up: true` 仅发送松开，默认 `false`。持续按住请使用 `press`。 |
+| `press` | 按住按键一段时间后松开 | `key`、正整数 `ms`。 |
+| `wheel` | 滚动鼠标滚轮 | 非零整数 `delta`，正值向上、负值向下。 |
+| `drag` | 按指定时长拖动 | `from`、`to`；正整数 `duration`，默认 `200` 毫秒。 |
+| `wait` | 等待 | 正整数 `ms`，单位为毫秒。 |
+| `drag_native` | 使用 AHK 原生鼠标拖动 | `from`、`to`；`speed` 为 `0～100` 的整数，默认 `2`；可设置 `pre_drag_distance`、`pre_drag_speed`、`pre_drag_delay`。 |
+
+所有动作均可填写可选名称 `name`。完整字段校验及默认值见 [路线模型](crates/game-helper-core/src/route.rs) 和 [校验实现](crates/game-helper-core/src/route/validate.rs)。
+
+源码模式保存会保留通过校验的原文；表单编辑后保存会规范化 YAML，可能改变注释和排版，管理器会提示并备份原文件。
+
+## 配置说明
+
+本地 `config.json` 已加入忽略规则，管理器保存设置时会更新它，不会随仓库分发。仓库提供 [config.example.json](config.example.json) 作为初始化模板，其内容如下；请将它复制为本地配置后按需调整：
+
+```json
+{
+  "routesDir": "routes",
+  "hotkeys": {
+    "stopAll": "F12",
+    "bindings": []
+  },
+  "autoStartDaemon": false,
+  "autoReloadOnSave": true
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `routesDir` | 当前执行端仅支持 `"routes"`，不可改为其他目录。 |
+| `hotkeys.stopAll` | 全局急停键，当前为 `F12`。 |
+| `hotkeys.bindings` | 路线热键列表；每项包含 `hotkey`、`action: "run_route"`、路线文件名去掉扩展名后的 `route`、从 `1` 开始的点位序号 `startAt` 和 `enabled`。建议通过管理器设置。 |
+| `autoStartDaemon` | 是否随管理器启动执行服务；模板值为 `false`。 |
+| `autoReloadOnSave` | 保存路线后是否自动重载服务；模板值为 `true`。 |
+| `ahkPath` | 可选的外部 AutoHotkey v2 解释器绝对路径，仅在内置运行时缺失时使用。 |
+
+服务优先使用 [ahk/runtime/AutoHotkey64.exe](ahk/runtime/AutoHotkey64.exe)，其次使用非空的 `ahkPath`，最后探测系统安装位置。仅在内置运行时缺失时校验 `ahkPath`；非空路径无效则报错，不再继续系统探测。不依赖 `PATH` 搜索解释器。
+
+仓库自带 AutoHotkey **2.0.31 x64**，版本、来源及 SHA256 记录见 [metadata.json](ahk/runtime/metadata.json)。分发内置运行时时，请一并保留 [完整上游许可证](ahk/runtime/license.txt) 和 [对应源码归档](ahk/runtime/source.zip)。
+
+## 仓库结构
+
+下面是 Git 跟踪、克隆后可获得的主要内容：
 
 ```text
-crates/
-  game-helper-core/       路线、配置、校验、文档与文件存储
-  game-helper-windows/    窗口、DPI、全局热键、AHK 进程与 IPC
-  game-helper-desktop/    GPUI Kit 管理器、独立取点工具与原生 exe
-ahk/                     daemon / JSON / 执行核心与内置 runtime
-scripts/                 Rust 构建、便携打包和隔离 UI 检查
-routes/                  路线 YAML、_cache/ 执行缓存与 .backups/ 备份
-docs/                    路线规范、原生客户端说明和界面设计
-logs/                    执行日志
-state/                   daemon 单步游标、取点 picker.json 与管理器 manager-ui.json
-config.json              AHK 路径、热键绑定与 daemon 设置
-start.bat                默认 Rust 启动入口，可传 --picker
+game-helper/
+├─ .gitignore
+├─ Cargo.toml                        Rust workspace 与共享依赖
+├─ Cargo.lock                        锁定依赖版本
+├─ rust-toolchain.toml                工具链版本与组件
+├─ README.md
+├─ start.bat                         桌面客户端启动入口
+├─ config.example.json               本地配置初始化模板
+├─ ahk/
+│  ├─ daemon.ahk                     热键、单步游标与 IPC 服务
+│  ├─ lib/
+│  │  ├─ JSON.ahk                    JSON 支持
+│  │  └─ executor.ahk                动作执行器
+│  └─ runtime/                       解释器、许可证、元数据与源码归档
+└─ crates/
+   ├─ game-helper-core/              路线、配置、校验、存储与编辑状态
+   │  ├─ src/
+   │  ├─ tests/
+   │  └─ examples/route_json.rs       路线校验与 JSON 输出工具
+   ├─ game-helper-windows/           DPI、窗口、全局热键、进程与 IPC
+   │  ├─ src/
+   │  └─ tests/
+   └─ game-helper-desktop/           GPUI Kit 管理器、取点工具与验证窗口
+      └─ src/
 ```
 
-Rust 单元和契约测试位于各 crate 的 `src/`、`tests/` 中。
+## 执行机制与检查
 
-## 运行约定与验证边界
+```text
+Rust 管理器 ──校验、保存──▶ routes/*.yaml
+     │
+     └──生成执行缓存──▶ routes/_cache/*.json ──预载──▶ AHK daemon
+     │                                                   ▲
+     └──────────── Win32 IPC：状态 / 重载 / 停止 / 执行 ────┘
+```
 
-- 若目标程序以管理员身份运行，管理器及 AHK 执行进程也需以相应权限运行，才能发送输入。
-- 取点和执行使用窗口客户区归一化坐标，物理坐标换算采用 `(width-1)/(height-1)`。
-- 源码保存保留已验证原文；结构化编辑会规范化 YAML，可能改变注释与排版，保存前会提示并留备份。
-- 关闭管理器会保留执行服务；停止服务会结束服务进程。所有回放都由服务完成，全局急停键用于中断回放。
-- `logs/run_*.log` 记录动作和延迟；路线执行异常时可据此排查。
+路线保存、试跑及启用路线快捷键时会生成或更新执行缓存。AHK 服务读取缓存完成回放，Rust 客户端负责编辑、校验与服务控制。取点工具的采集记录独立保存，复制坐标后再粘贴到路线动作中。
 
-当前客户端仍处于原生预览阶段。真实 AHK 六类操作完整闭环、系统 IME、多 DPI 与多显示器场景仍有待验收；默认入口切换不代表这些验收已完成。详见[待完成事项](docs/rust-migration.md#仍待完成的验收)。
+可从仓库根目录执行以下检查：
+
+```bat
+rem 核心层契约测试，不需要打开桌面界面
+cargo test -p game-helper-core --locked
+
+rem 工作区测试，需在 Windows 环境运行
+cargo test --workspace --locked
+
+rem Rust 格式检查
+cargo fmt --all -- --check
+
+rem 校验自己的路线并将执行用 JSON 输出到终端，不写入缓存
+cargo run -p game-helper-core --example route_json --locked -- routes/example.yaml
+```
+
+Windows 测试涉及真实 Win32 API，部分用例会启动内置 AHK 进程；影响前台窗口或输入的部分用例默认忽略。自动测试通过仍需结合实际目标程序验证回放效果。
+
+## 常见问题
+
+- **找不到客户端 exe**：先执行源码构建命令，再运行 [start.bat](start.bat)。远程仓库不包含 `target/` 下的编译产物。
+- **未能定位应用目录**：用 `--app-root` 指向同时包含配置文件与 AHK 服务脚本的目录；携带运行时请保留整个 `ahk/` 目录。
+- **首次没有路线，快捷键也无效**：个人路线已被忽略，需要自行新建或导入；检查配置中是否仍有未随仓库分发的路线绑定，确认执行服务已启动且路线快捷键已开启。
+- **“试跑选中点”不可用**：确认路线已保存、点位有效，执行服务已启动且空闲，服务状态读取正常。
+- **无法采点或目标失效**：还原最小化的目标窗口，将光标移入目标客户区；窗口关闭或重建后重新选择。
+- **输入无法送达目标程序**：检查目标窗口匹配条件与权限。目标以管理员身份运行时，管理器和 AHK 服务也需要相应权限。执行细节可查看本地 `logs/run_*.log`。
+- **保存提示磁盘冲突**：文件在打开后被其他程序修改，请重新加载后再编辑保存。
+
+当前版本在真实目标程序中的动作兼容性、系统输入法以及多 DPI、多显示器场景仍需持续验证；归一化坐标也不能保证界面布局改变后仍命中同一控件。

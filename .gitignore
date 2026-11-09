@@ -2,6 +2,10 @@
 logs/
 state/
 
+# ===== 本机配置与配置备份 =====
+/config.json
+/.backups/
+
 # ===== 本地路由 =====
 /routes/
 

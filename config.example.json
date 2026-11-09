@@ -1,0 +1,9 @@
+{
+  "routesDir": "routes",
+  "hotkeys": {
+    "stopAll": "F12",
+    "bindings": []
+  },
+  "autoStartDaemon": false,
+  "autoReloadOnSave": true
+}
